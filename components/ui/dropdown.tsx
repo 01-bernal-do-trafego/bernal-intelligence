@@ -72,6 +72,8 @@ interface DropdownItemProps {
   onSelect?: () => void;
   tone?: "default" | "danger";
   disabled?: boolean;
+  /** "submit" para acionar um <form action={...}> (ex.: logout). */
+  type?: "button" | "submit";
 }
 
 export function DropdownItem({
@@ -79,10 +81,11 @@ export function DropdownItem({
   onSelect,
   tone = "default",
   disabled = false,
+  type = "button",
 }: DropdownItemProps) {
   return (
     <button
-      type="button"
+      type={type}
       role="menuitem"
       disabled={disabled}
       onClick={onSelect}

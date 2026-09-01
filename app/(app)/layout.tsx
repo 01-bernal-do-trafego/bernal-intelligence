@@ -1,26 +1,34 @@
 import { redirect } from "next/navigation";
 import { getAuthMode } from "@/supabase/config";
-import { getCurrentUser } from "@/supabase/server";
+import { requireAgencySession } from "@/supabase/auth";
 import { AppShell } from "@/components/layout/app-shell";
 
-export default async function AppLayout({
-  children,
-}: LayoutProps<"/">) {
+export default async function AppLayout({ children }: LayoutProps<"/">) {
   const mode = getAuthMode();
 
+  // Produção sem Supabase configurado: nada aqui é acessível.
   if (mode === "unconfigured") {
     redirect("/login");
   }
 
-  let userEmail: string | undefined;
-  if (mode === "supabase") {
-    const user = await getCurrentUser();
-    if (!user) redirect("/login");
-    userEmail = user.email ?? undefined;
+  // Modo demonstração (apenas local, sem Supabase): sem sessão real.
+  if (mode === "demo") {
+    return (
+      <AppShell demo>
+        {children}
+      </AppShell>
+    );
   }
 
+  // Modo Supabase: exige sessão de membro da equipe Bernal.
+  const { user, profile } = await requireAgencySession();
+
   return (
-    <AppShell userEmail={userEmail} demo={mode === "demo"}>
+    <AppShell
+      email={user.email ?? undefined}
+      displayName={profile.fullName ?? undefined}
+      role={profile.role}
+    >
       {children}
     </AppShell>
   );

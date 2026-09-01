@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
 import { getAuthMode, isSupabaseConfigured } from "@/supabase/config";
+import { getSessionContext } from "@/supabase/auth";
+import { ROLE_LABEL } from "@/lib/roles";
 import { ComingSoon } from "@/components/shared/coming-soon";
 import { Badge } from "@/components/ui/badge";
 
@@ -20,8 +22,9 @@ const FUTURE_SECTIONS = [
   "Outras plataformas",
 ];
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
   const mode = getAuthMode();
+  const session = mode === "supabase" ? await getSessionContext() : null;
 
   return (
     <ComingSoon
@@ -40,11 +43,18 @@ export default function SettingsPage() {
         ))}
       </ul>
 
-      <div className="mt-6 flex items-center justify-center gap-2 text-sm">
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-2 text-sm">
         <span className="text-muted">Autenticação:</span>
         <Badge tone={isSupabaseConfigured() ? "positive" : "muted"}>
           {MODE_LABEL[mode]}
         </Badge>
+        {session?.profile && (
+          <>
+            <span className="text-muted">·</span>
+            <span className="text-muted">Seu acesso:</span>
+            <Badge tone="accent">{ROLE_LABEL[session.profile.role]}</Badge>
+          </>
+        )}
       </div>
     </ComingSoon>
   );

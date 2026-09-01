@@ -22,8 +22,10 @@ export function LoginForm({ mode, redirectTo = "/" }: LoginFormProps) {
 
   function goToApp() {
     startTransition(() => {
-      router.replace(redirectTo);
+      // Revalida a árvore server-side já com o cookie de sessão novo,
+      // depois navega para a Visão geral (sem deixar /login no histórico).
       router.refresh();
+      router.replace(redirectTo);
     });
   }
 
@@ -105,10 +107,16 @@ export function LoginForm({ mode, redirectTo = "/" }: LoginFormProps) {
         />
       </div>
 
+      {/*
+        Recuperação de senha: estrutura preparada, ainda NÃO implementada.
+        Próximo passo será um fluxo próprio (rota /login/recuperar) usando
+        supabase.auth.resetPasswordForEmail + página de nova senha.
+      */}
       <div className="flex justify-end">
         <span
-          className="text-xs text-muted"
-          title="Disponível quando a autenticação estiver conectada"
+          className="cursor-not-allowed text-xs text-muted"
+          aria-disabled="true"
+          title="Disponível em uma próxima etapa"
         >
           Recuperar senha (em breve)
         </span>

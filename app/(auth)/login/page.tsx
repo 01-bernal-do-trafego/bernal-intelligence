@@ -8,9 +8,16 @@ interface LoginPageProps {
   searchParams: Promise<{ redirectTo?: string }>;
 }
 
+/** Só aceita caminho interno absoluto — evita open redirect. */
+function safeRedirect(value: string | undefined): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) return "/";
+  return value;
+}
+
 export default async function LoginPage({ searchParams }: LoginPageProps) {
   const { redirectTo } = await searchParams;
   const mode = getAuthMode();
+  const target = safeRedirect(redirectTo);
 
   return (
     <main className="flex min-h-screen items-center justify-center bg-background px-4">
@@ -28,7 +35,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         </p>
 
         <div className="mt-6 rounded-xl border border-border bg-surface p-6">
-          <LoginForm mode={mode} redirectTo={redirectTo || "/"} />
+          <LoginForm mode={mode} redirectTo={target} />
         </div>
       </div>
     </main>

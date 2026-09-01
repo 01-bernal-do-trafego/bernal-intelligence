@@ -1,23 +1,32 @@
 "use client";
 
-import { Menu, LogOut, UserRound } from "lucide-react";
-import { cn } from "@/lib/cn";
-import { Dropdown, DropdownItem, DropdownSeparator } from "@/components/ui/dropdown";
+import { LogOut, Menu, UserRound } from "lucide-react";
+import { signOut } from "@/app/(app)/actions";
+import { ROLE_LABEL, type AppRole } from "@/lib/roles";
+import {
+  Dropdown,
+  DropdownItem,
+  DropdownSeparator,
+} from "@/components/ui/dropdown";
 
 interface TopbarProps {
   onMenuClick: () => void;
-  userEmail?: string;
-  onSignOut?: () => void;
-  /** Rótulo de contexto (ex.: "Modo demonstração"). */
-  contextLabel?: string;
+  email?: string;
+  displayName?: string;
+  role?: AppRole;
+  demo?: boolean;
 }
 
 export function Topbar({
   onMenuClick,
-  userEmail,
-  onSignOut,
-  contextLabel,
+  email,
+  displayName,
+  role,
+  demo = false,
 }: TopbarProps) {
+  const primary = displayName || email || "Conta";
+  const roleLabel = demo ? "Modo demonstração" : role ? ROLE_LABEL[role] : null;
+
   return (
     <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-border bg-background/80 px-4 backdrop-blur lg:px-6">
       <button
@@ -31,13 +40,9 @@ export function Topbar({
 
       <div className="flex-1" />
 
-      {contextLabel && (
-        <span
-          className={cn(
-            "hidden rounded-full border border-border px-2.5 py-1 text-xs text-muted sm:inline-block",
-          )}
-        >
-          {contextLabel}
+      {demo && (
+        <span className="hidden rounded-full border border-border px-2.5 py-1 text-xs text-muted sm:inline-block">
+          Modo demonstração
         </span>
       )}
 
@@ -47,21 +52,27 @@ export function Topbar({
           <span className="flex items-center gap-2 rounded-lg border border-border bg-surface px-2.5 py-1.5 text-sm text-foreground transition-colors hover:border-muted/40">
             <UserRound className="size-4 text-muted" />
             <span className="hidden max-w-[180px] truncate sm:inline">
-              {userEmail ?? "Conta"}
+              {primary}
             </span>
           </span>
         }
       >
-        {userEmail && (
-          <>
-            <div className="px-2.5 py-1.5 text-xs text-muted">{userEmail}</div>
-            <DropdownSeparator />
-          </>
-        )}
-        <DropdownItem tone="danger" onSelect={onSignOut}>
-          <LogOut className="size-4" />
-          Sair
-        </DropdownItem>
+        <div className="px-2.5 py-1.5">
+          <p className="truncate text-sm text-foreground">{primary}</p>
+          {email && email !== primary && (
+            <p className="truncate text-xs text-muted">{email}</p>
+          )}
+          {roleLabel && (
+            <p className="mt-0.5 text-xs text-accent">{roleLabel}</p>
+          )}
+        </div>
+        <DropdownSeparator />
+        <form action={signOut}>
+          <DropdownItem type="submit" tone="danger">
+            <LogOut className="size-4" />
+            Sair
+          </DropdownItem>
+        </form>
       </Dropdown>
     </header>
   );
