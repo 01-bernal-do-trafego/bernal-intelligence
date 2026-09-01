@@ -45,8 +45,8 @@ const columns: readonly Column<PortfolioClientRow>[] = [
       ),
   },
   {
-    key: "health",
-    header: "Health",
+    key: "score",
+    header: "Score",
     align: "right",
     render: (row) => (
       <HealthScore

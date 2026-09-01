@@ -62,7 +62,7 @@ export default async function ClientDashboardPage({
 
   if (!dashboard) notFound();
 
-  const { client, kpis, series } = dashboard;
+  const { client, kpis, series, resultMetric } = dashboard;
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-8">
@@ -112,12 +112,12 @@ export default async function ClientDashboardPage({
           delta={delta(kpis.spend, compare)}
         />
         <MetricCard
-          label="Resultados"
+          label={resultMetric.resultLabel}
           value={formatNumber(kpis.results.current)}
           delta={delta(kpis.results, compare)}
         />
         <MetricCard
-          label="Custo por resultado"
+          label={resultMetric.costLabel}
           value={formatCurrency(kpis.costPerResult.current)}
           delta={delta(kpis.costPerResult, compare)}
         />
@@ -130,14 +130,15 @@ export default async function ClientDashboardPage({
 
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <ChartContainer
-          title="Resultados ao longo do tempo"
+          title={`${resultMetric.resultLabel} ao longo do tempo`}
           isEmpty={series.results.current.every((d) => d.value === 0)}
         >
           <TrendChart
             data={zipSeries(series.results.current, series.results.previous)}
             variant="area"
-            seriesLabel="Resultados"
+            seriesLabel={resultMetric.resultLabel}
             format="number"
+            comparisonBehavior="higher_is_better"
           />
         </ChartContainer>
 
@@ -154,7 +155,7 @@ export default async function ClientDashboardPage({
         </ChartContainer>
 
         <ChartContainer
-          title="Custo por resultado"
+          title={resultMetric.costLabel}
           className="xl:col-span-2"
           isEmpty={series.costPerResult.current.every((d) => d.value === 0)}
         >
@@ -164,15 +165,19 @@ export default async function ClientDashboardPage({
               series.costPerResult.previous,
             )}
             variant="line"
-            seriesLabel="Custo por resultado"
+            seriesLabel={resultMetric.costLabel}
             format="currency"
+            comparisonBehavior="lower_is_better"
           />
         </ChartContainer>
       </div>
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold text-foreground">Campanhas</h2>
-        <CampaignsTable rows={dashboard.campaignRows} />
+        <h2 className="text-base font-semibold text-foreground">Campanhas</h2>
+        <CampaignsTable
+          rows={dashboard.campaignRows}
+          resultMetric={resultMetric}
+        />
       </section>
     </div>
   );

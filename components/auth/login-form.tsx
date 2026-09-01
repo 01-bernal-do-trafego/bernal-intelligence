@@ -105,6 +105,15 @@ export function LoginForm({ mode, redirectTo = "/" }: LoginFormProps) {
         />
       </div>
 
+      <div className="flex justify-end">
+        <span
+          className="text-xs text-muted"
+          title="Disponível quando a autenticação estiver conectada"
+        >
+          Recuperar senha (em breve)
+        </span>
+      </div>
+
       {error && <p className="text-sm text-negative">{error}</p>}
 
       <Button type="submit" className="w-full" loading={submitting || pending}>

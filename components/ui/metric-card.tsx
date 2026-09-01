@@ -58,9 +58,9 @@ export function MetricCard({
       </div>
 
       {loading ? (
-        <Skeleton className="h-7 w-28" />
+        <Skeleton className="h-9 w-32" />
       ) : (
-        <span className="text-2xl font-semibold tabular-nums text-foreground">
+        <span className="text-[28px] font-semibold leading-none tracking-tight tabular-nums text-foreground sm:text-3xl">
           {value}
         </span>
       )}
@@ -68,17 +68,17 @@ export function MetricCard({
       {loading ? (
         <Skeleton className="h-4 w-32" />
       ) : delta ? (
-        <div className="flex items-center gap-1.5 text-xs">
+        <div className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
           <span
             className={cn(
-              "inline-flex items-center gap-0.5 font-medium tabular-nums",
+              "inline-flex items-center gap-0.5 text-sm font-semibold tabular-nums",
               SENTIMENT_COLOR[delta.sentiment],
             )}
           >
             <DeltaIcon direction={delta.direction} />
             {formatSignedPercent(delta.changePct)}
           </span>
-          <span className="text-muted">vs. período anterior</span>
+          <span className="text-[11px] text-muted">vs. período anterior</span>
         </div>
       ) : hint ? (
         <span className="text-xs text-muted">{hint}</span>

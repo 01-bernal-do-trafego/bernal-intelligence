@@ -25,7 +25,7 @@ export function AppShell({ children, userEmail, demo = false }: AppShellProps) {
           onSignOut={() => void signOut()}
           contextLabel={demo ? "Modo demonstração" : undefined}
         />
-        <main className="flex-1 p-4 lg:p-6">{children}</main>
+        <main className="flex-1 px-4 py-5 sm:px-6 sm:py-6 lg:px-8">{children}</main>
       </div>
     </div>
   );

@@ -125,7 +125,7 @@ export function getPortfolioOverview(
 export function getPortfolioAlerts(): PortfolioAlert[] {
   return [
     {
-      id: "alert-cpr-atacado",
+      id: "alert-1",
       kind: "critical",
       clientName: "Atacado do Chinelo",
       title: "Custo por resultado 34% acima da meta",
@@ -133,7 +133,7 @@ export function getPortfolioAlerts(): PortfolioAlert[] {
         "O CPR dos últimos 3 dias subiu de R$ 22 para R$ 30. A campanha de prospecção fria está puxando a média da conta.",
     },
     {
-      id: "alert-budget-oversized",
+      id: "alert-2",
       kind: "warning",
       clientName: "Oversized Store",
       title: "Ritmo de orçamento adiantado",
@@ -141,7 +141,7 @@ export function getPortfolioAlerts(): PortfolioAlert[] {
         "78% do orçamento mensal consumido com 61% do mês decorrido. No ritmo atual, a verba se esgota ~4 dias antes do fim do mês.",
     },
     {
-      id: "alert-scale-uniforte",
+      id: "alert-3",
       kind: "opportunity",
       clientName: "Uniforte",
       title: "Espaço para escalar o Retargeting 7d",

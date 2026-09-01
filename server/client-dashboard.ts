@@ -7,6 +7,7 @@ import type {
   Campaign,
   CampaignStatus,
   Client,
+  ResultMetricConfig,
   TimePoint,
 } from "@/types/domain";
 import { resolveRequestedPeriod } from "./period";
@@ -41,6 +42,8 @@ export interface ClientDashboardParams {
 
 export interface ClientDashboardData {
   client: Client;
+  /** Métrica principal configurada para este cliente (rótulos dinâmicos). */
+  resultMetric: ResultMetricConfig;
   accounts: AdAccount[];
   /** Campanhas disponíveis para o filtro (respeita o filtro de conta). */
   campaigns: Campaign[];
@@ -145,6 +148,7 @@ export function getClientDashboard(
 
   return {
     client,
+    resultMetric: client.dashboardConfig.resultMetric,
     accounts: clientAccounts,
     campaigns: filterCampaigns,
     filters: { accountId, campaignId },

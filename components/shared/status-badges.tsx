@@ -1,4 +1,6 @@
+import { Clock } from "lucide-react";
 import { Badge, type BadgeTone } from "@/components/ui/badge";
+import { cn } from "@/lib/cn";
 import {
   CAMPAIGN_STATUS_LABEL,
   CLIENT_STATUS_LABEL,
@@ -6,6 +8,7 @@ import {
   type CampaignStatus,
   type ClientStatus,
   type MetaConnectionStatus,
+  type SyncState,
 } from "@/types/domain";
 
 const CLIENT_TONE: Record<ClientStatus, BadgeTone> = {
@@ -47,7 +50,7 @@ export function CampaignStatusBadge({ status }: { status: CampaignStatus }) {
   return <Badge tone={CAMPAIGN_TONE[status]}>{CAMPAIGN_STATUS_LABEL[status]}</Badge>;
 }
 
-/** Health score 0–100. Mostra "—" quando não há Meta conectada. */
+/** Score de saúde 0–100. Mostra "—" quando não há Meta conectada. */
 export function HealthScore({
   value,
   connected,
@@ -59,4 +62,32 @@ export function HealthScore({
   const tone =
     value >= 70 ? "text-positive" : value >= 45 ? "text-warning" : "text-negative";
   return <span className={`font-medium tabular-nums ${tone}`}>{value}</span>;
+}
+
+/** Indicação discreta da última sincronização de dados do cliente. */
+export function SyncIndicator({
+  label,
+  state,
+  className,
+}: {
+  label: string;
+  state: SyncState;
+  className?: string;
+}) {
+  const tone =
+    state === "error"
+      ? "text-negative"
+      : state === "stale"
+        ? "text-warning"
+        : "text-muted";
+  return (
+    <span
+      className={cn("inline-flex items-center gap-1 text-xs", tone, className)}
+    >
+      {state !== "error" && state !== "never" && (
+        <Clock className="size-3 shrink-0" />
+      )}
+      {label}
+    </span>
+  );
 }

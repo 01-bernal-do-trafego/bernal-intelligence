@@ -42,7 +42,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
   );
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-8">
+    <div className="mx-auto flex max-w-7xl flex-col gap-10">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold text-foreground">Visão geral</h1>
@@ -80,8 +80,14 @@ export default async function HomePage({ searchParams }: HomePageProps) {
       </section>
 
       <section className="flex flex-col gap-3">
-        <h2 className="text-sm font-semibold text-foreground">Atenção hoje</h2>
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Atenção hoje</h2>
+          <p className="text-xs text-muted">
+            Onde agir primeiro — riscos de custo, ritmo de orçamento e
+            oportunidades.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {alerts.map((alert) => (
             <AttentionCard key={alert.id} alert={alert} />
           ))}

@@ -21,18 +21,84 @@ export const META_STATUS_LABEL: Record<MetaConnectionStatus, string> = {
   error: "Erro de conexão",
 };
 
+/**
+ * Tipo da conversão principal de um cliente. O Bernal Intelligence é
+ * multicliente: cada cliente define qual conversão é o "resultado" que
+ * importa (e, por consequência, o "custo por resultado").
+ */
+export type ResultMetricType =
+  | "lead"
+  | "purchase"
+  | "conversation"
+  | "signup"
+  | "scheduling"
+  | "custom";
+
+export interface ResultMetricConfig {
+  type: ResultMetricType;
+  /** Rótulo plural para o total (ex.: "Compras"). */
+  resultLabel: string;
+  /** Rótulo do custo por unidade (ex.: "Custo por compra"). */
+  costLabel: string;
+}
+
+/**
+ * Configuração de dashboard por cliente. Nesta V1 só `resultMetric` é usado.
+ * Os demais campos ficam registrados para a fase de "Editar dashboard":
+ * escolher métricas, cards, gráficos e tabelas, reorganizar componentes,
+ * salvar a configuração por cliente e, futuramente, aplicar templates.
+ */
+export interface DashboardConfig {
+  resultMetric: ResultMetricConfig;
+  // Futuro (Editar dashboard):
+  // visibleKpis?: string[];
+  // charts?: DashboardChartConfig[];
+  // tables?: DashboardTableConfig[];
+  // layout?: DashboardLayoutItem[];
+  // templateId?: string | null;
+}
+
+/**
+ * Configuração do dashboard compartilhável por cliente. Registrada para a
+ * fase futura: gerar link individual do cliente, ativar/desativar o link,
+ * escolher acesso público ou protegido e, mais adiante, definir senha ou login.
+ */
+export interface ShareConfig {
+  enabled: boolean;
+  visibility: "public" | "protected";
+  /** Slug do link público; `null` enquanto não gerado. */
+  slug: string | null;
+  // Futuro: passwordHash?: string; allowedEmails?: string[];
+}
+
+export const DEFAULT_SHARE_CONFIG: ShareConfig = {
+  enabled: false,
+  visibility: "protected",
+  slug: null,
+};
+
+/** Estado da última sincronização de dados do cliente. */
+export type SyncState = "ok" | "stale" | "error" | "never";
+
 export interface Client {
   id: string;
   /** Nome público / comercial. */
   name: string;
-  /** Nome interno usado pela equipe Bernal. */
+  /** Identificação interna usada pela equipe Bernal (opcional). */
   internalName: string;
   status: ClientStatus;
   metaStatus: MetaConnectionStatus;
-  /** Health score mockado (0–100). */
+  /** Score de saúde mockado (0–100). */
   healthScore: number;
   createdAt: string;
   logoUrl: string | null;
+  /** Configuração de dashboard específica do cliente. */
+  dashboardConfig: DashboardConfig;
+  /** Configuração de compartilhamento específica do cliente. */
+  shareConfig: ShareConfig;
+  /** Rótulo relativo da última sincronização (mock nesta fase). */
+  lastSyncLabel: string;
+  syncState: SyncState;
 }
 
 export interface AdAccount {

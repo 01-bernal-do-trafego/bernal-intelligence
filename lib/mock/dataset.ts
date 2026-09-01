@@ -8,12 +8,16 @@
  */
 
 import { addDays, eachDay } from "@/lib/date-range";
+import { RESULT_METRIC_PRESETS } from "@/lib/result-metric";
+import { DEFAULT_SHARE_CONFIG } from "@/types/domain";
 import type {
   AdAccount,
   Campaign,
   CampaignObjective,
   Client,
   DailyMetric,
+  ResultMetricType,
+  SyncState,
 } from "@/types/domain";
 import { createRng } from "./seed";
 
@@ -29,8 +33,23 @@ export interface MockDataset {
   dailyMetrics: DailyMetric[];
 }
 
-interface ClientDef extends Omit<Client, "logoUrl"> {
+/**
+ * Definição de um cliente fictício. Cada cliente é independente: tem sua
+ * própria métrica principal, contas, campanhas e rótulo de sincronização.
+ * Nada aqui é tratado de forma especial pelo resto do sistema.
+ */
+interface ClientDef {
+  id: string;
+  name: string;
+  internalName: string;
+  status: Client["status"];
+  metaStatus: Client["metaStatus"];
+  healthScore: number;
+  createdAt: string;
   accounts: number;
+  resultMetric: ResultMetricType;
+  lastSyncLabel: string;
+  syncState: SyncState;
 }
 
 const CLIENT_DEFS: readonly ClientDef[] = [
@@ -43,6 +62,9 @@ const CLIENT_DEFS: readonly ClientDef[] = [
     healthScore: 82,
     createdAt: "2025-11-12",
     accounts: 2,
+    resultMetric: "purchase",
+    lastSyncLabel: "Agora",
+    syncState: "ok",
   },
   {
     id: "boutique-rotattiva",
@@ -53,6 +75,9 @@ const CLIENT_DEFS: readonly ClientDef[] = [
     healthScore: 76,
     createdAt: "2026-01-20",
     accounts: 1,
+    resultMetric: "purchase",
+    lastSyncLabel: "5 min atrás",
+    syncState: "ok",
   },
   {
     id: "oversized-store",
@@ -63,6 +88,9 @@ const CLIENT_DEFS: readonly ClientDef[] = [
     healthScore: 69,
     createdAt: "2026-02-05",
     accounts: 1,
+    resultMetric: "purchase",
+    lastSyncLabel: "12 min atrás",
+    syncState: "ok",
   },
   {
     id: "atacado-do-chinelo",
@@ -73,6 +101,9 @@ const CLIENT_DEFS: readonly ClientDef[] = [
     healthScore: 48,
     createdAt: "2025-09-30",
     accounts: 1,
+    resultMetric: "lead",
+    lastSyncLabel: "38 min atrás",
+    syncState: "stale",
   },
   {
     id: "clinica-vitalita",
@@ -83,6 +114,9 @@ const CLIENT_DEFS: readonly ClientDef[] = [
     healthScore: 0,
     createdAt: "2026-08-18",
     accounts: 0,
+    resultMetric: "scheduling",
+    lastSyncLabel: "—",
+    syncState: "never",
   },
   {
     id: "studio-corpo",
@@ -93,6 +127,9 @@ const CLIENT_DEFS: readonly ClientDef[] = [
     healthScore: 31,
     createdAt: "2025-06-11",
     accounts: 1,
+    resultMetric: "lead",
+    lastSyncLabel: "Erro de sincronização",
+    syncState: "error",
   },
 ];
 
@@ -128,6 +165,12 @@ function buildClients(): Client[] {
     healthScore: def.healthScore,
     createdAt: def.createdAt,
     logoUrl: null,
+    dashboardConfig: {
+      resultMetric: RESULT_METRIC_PRESETS[def.resultMetric],
+    },
+    shareConfig: { ...DEFAULT_SHARE_CONFIG },
+    lastSyncLabel: def.lastSyncLabel,
+    syncState: def.syncState,
   }));
 }
 

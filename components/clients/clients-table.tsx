@@ -11,6 +11,7 @@ import {
   ClientStatusBadge,
   HealthScore,
   MetaStatusBadge,
+  SyncIndicator,
 } from "@/components/shared/status-badges";
 import { formatCurrency } from "@/lib/format";
 import type { ClientListItem } from "@/server/clients";
@@ -36,8 +37,13 @@ export function ClientsTable({ rows }: ClientsTableProps) {
     },
     {
       key: "meta",
-      header: "Meta",
-      render: (row) => <MetaStatusBadge status={row.metaStatus} />,
+      header: "Conexão Meta",
+      render: (row) => (
+        <div className="flex flex-col gap-1">
+          <MetaStatusBadge status={row.metaStatus} />
+          <SyncIndicator label={row.lastSyncLabel} state={row.syncState} />
+        </div>
+      ),
     },
     {
       key: "spend",
@@ -48,8 +54,8 @@ export function ClientsTable({ rows }: ClientsTableProps) {
       ),
     },
     {
-      key: "health",
-      header: "Health",
+      key: "score",
+      header: "Score",
       align: "right",
       render: (row) => (
         <HealthScore
