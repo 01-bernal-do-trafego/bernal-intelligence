@@ -1,36 +1,104 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Bernal Intelligence
 
-## Getting Started
+Plataforma própria de inteligência e dashboards de mídia paga da **Bernal do Tráfego**.
 
-First, run the development server:
+Esta é a **fundação** do produto: interface, design system, shell autenticado e
+dashboards funcionando com **dados mockados**. Ainda **não há** integração com
+Meta Ads, IA, alertas automáticos, Google/TikTok ou CRM — a arquitetura foi
+desenhada para receber esses módulos depois.
+
+## Stack
+
+- **Next.js 16** (App Router, Turbopack) + **React 19**
+- **TypeScript** estrito
+- **Tailwind CSS v4** (design tokens em `app/globals.css`)
+- **Supabase** (`@supabase/ssr`) — Supabase Auth preparado
+- **Recharts** para gráficos
+- **Vitest** para testes de unidade
+
+## Rodando localmente
+
+Requisitos: **Node.js 20+** (testado no Node 24).
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+# http://localhost:3000
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Variáveis de ambiente
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+O arquivo `.env.local` já existe na raiz com os campos **vazios**:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+NEXT_PUBLIC_SUPABASE_URL=
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=
+```
 
-## Learn More
+Preencha com os valores do seu projeto Supabase (use a chave **publishable/anon**,
+nunca a `service_role`). O `.env.local` está no `.gitignore` e **nunca** deve ser
+versionado. Um modelo versionado fica em `.env.example`.
 
-To learn more about Next.js, take a look at the following resources:
+### Modos de autenticação
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+O comportamento depende das variáveis acima (`supabase/config.ts`):
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+| Situação | Modo | Comportamento |
+| --- | --- | --- |
+| Variáveis preenchidas | `supabase` | Autenticação real via Supabase Auth |
+| Vazias, em desenvolvimento | `demo` | "Modo demonstração": libera a navegação local com dados fictícios |
+| Vazias, em produção | `unconfigured` | Acesso negado — tudo redireciona para `/login`. Nunca há bypass de autenticação em produção |
 
-## Deploy on Vercel
+## Scripts
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+| Comando | Ação |
+| --- | --- |
+| `npm run dev` | Servidor de desenvolvimento |
+| `npm run build` | Build de produção |
+| `npm run start` | Sobe o build de produção |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | `tsc --noEmit` |
+| `npm test` | Testes (Vitest) |
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Estrutura
+
+```
+app/
+  (auth)/login/         # tela de login
+  (app)/                # área autenticada (shell + rotas)
+    page.tsx            # Home / Visão geral (carteira)
+    clients/            # lista, novo cliente, dashboard /clients/[id]
+    intelligence|templates|settings/   # placeholders
+components/
+  ui/                   # design system (Button, Input, Modal, DataTable, ...)
+  layout/               # Sidebar, Topbar, AppShell
+  charts/               # TrendChart (Recharts)
+  portfolio/ clients/ client-dashboard/ shared/
+lib/
+  metrics.ts            # CTR/CPC/CPM/custo por resultado (sobre totais brutos)
+  comparison.ts         # variação % + classificação por comportamento da métrica
+  date-range.ts         # presets de período e faixas
+  format.ts             # formatação pt-BR (blindada contra NaN/Infinity)
+  series.ts  cn.ts
+  mock/                 # fonte mock ÚNICA e determinística (seed fixa)
+server/                 # camada de consulta (recalcula os mocks por filtro)
+types/                  # modelo de domínio
+tests/                  # testes de unidade
+supabase/               # clients SSR + proxy de sessão
+proxy.ts                # convenção do Next 16 (ex-middleware): sessão + guarda de rota
+```
+
+### Regras de métricas
+
+Métricas derivadas **nunca** são a média das métricas diárias. Sempre se somam os
+totais brutos (investimento, impressões, cliques, resultados) e só então se
+calcula a razão — ver `lib/metrics.ts` e `tests/metrics.test.ts`.
+
+## Roadmap (próximas fases)
+
+- Integração Meta Ads (OAuth + ingestão)
+- Persistência de clientes/contas no Supabase (+ RLS)
+- Google Ads, TikTok Ads, Kommo CRM
+- Alertas de performance e de orçamento
+- Recomendações e otimizações assistidas por IA
+- Dashboard compartilhável (forte prioridade mobile)
