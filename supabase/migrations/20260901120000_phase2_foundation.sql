@@ -6,6 +6,8 @@
 --     Aplicação futura: Supabase Studio > SQL Editor, ou `supabase db push`.
 --     O runner do Supabase (e o SQL Editor) roda o script inteiro em uma
 --     transação — não há BEGIN/COMMIT explícito aqui de propósito.
+--     Idempotente: usa create ... if not exists / or replace / drop policy if
+--     exists, então pode ser reexecutada sem erro (mas o alvo é rodar 1x).
 --
 -- Escopo desta fundação:
 --   • usuários da equipe Bernal e (futuros) usuários clientes  -> public.profiles
@@ -67,7 +69,7 @@ comment on table public.profiles is
 
 create index if not exists profiles_role_idx on public.profiles (role);
 
-create trigger profiles_set_updated_at
+create or replace trigger profiles_set_updated_at
   before update on public.profiles
   for each row execute function public.set_updated_at();
 
@@ -89,7 +91,7 @@ comment on table public.clients is
 create index if not exists clients_status_idx     on public.clients (status);
 create index if not exists clients_created_at_idx on public.clients (created_at desc);
 
-create trigger clients_set_updated_at
+create or replace trigger clients_set_updated_at
   before update on public.clients
   for each row execute function public.set_updated_at();
 
@@ -121,7 +123,7 @@ create table if not exists public.dashboard_configs (
 comment on table public.dashboard_configs is
   'Configuração de dashboard por cliente. result_metric = conversão principal (type/resultLabel/costLabel); layout = cards, gráficos, ordem dos componentes e colunas de tabela (preenchido pelo editor futuro).';
 
-create trigger dashboard_configs_set_updated_at
+create or replace trigger dashboard_configs_set_updated_at
   before update on public.dashboard_configs
   for each row execute function public.set_updated_at();
 
@@ -145,7 +147,7 @@ begin
 end;
 $$;
 
-create trigger on_auth_user_created
+create or replace trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
 
@@ -164,7 +166,7 @@ begin
 end;
 $$;
 
-create trigger on_client_created
+create or replace trigger on_client_created
   after insert on public.clients
   for each row execute function public.handle_new_client();
 
@@ -241,7 +243,7 @@ begin
 end;
 $$;
 
-create trigger profiles_guard_role
+create or replace trigger profiles_guard_role
   before update on public.profiles
   for each row execute function public.prevent_unauthorized_role_change();
 
@@ -257,6 +259,8 @@ grant select, insert, update, delete
   on public.profiles, public.clients, public.client_users, public.dashboard_configs
   to authenticated;
 
+-- Funções de autorização: só authenticated executa (retornam boolean/enum
+-- sobre o próprio chamador — nunca linhas de dado).
 revoke all on function
   public.current_app_role(),
   public.is_agency(),
@@ -271,6 +275,15 @@ grant execute on function
   public.can_access_client(uuid)
   to authenticated;
 
+-- Funções de trigger/utilitário: ninguém as chama diretamente (os triggers
+-- as disparam independentemente de GRANT). Sem EXECUTE para anon/authenticated.
+revoke all on function
+  public.set_updated_at(),
+  public.handle_new_user(),
+  public.handle_new_client(),
+  public.prevent_unauthorized_role_change()
+  from anon, authenticated, public;
+
 -- -----------------------------------------------------------------------------
 -- 8. Row Level Security
 -- -----------------------------------------------------------------------------
@@ -281,19 +294,24 @@ alter table public.dashboard_configs enable row level security;
 
 -- 8.1 profiles ---------------------------------------------------------------
 -- Ler: o próprio perfil, ou qualquer perfil se for equipe Bernal.
+drop policy if exists profiles_select_self_or_agency on public.profiles;
 create policy profiles_select_self_or_agency
   on public.profiles for select
   to authenticated
   using ( id = (select auth.uid()) or public.is_agency() );
 
--- Atualizar o próprio perfil (troca de role é barrada pelo trigger).
+-- Atualizar o próprio perfil. Dupla proteção contra auto-escalonamento de role:
+--   (a) o WITH CHECK exige que o role permaneça igual ao já armazenado;
+--   (b) o trigger profiles_guard_role rejeita qualquer troca por não-admin.
+drop policy if exists profiles_update_self on public.profiles;
 create policy profiles_update_self
   on public.profiles for update
   to authenticated
   using ( id = (select auth.uid()) )
-  with check ( id = (select auth.uid()) );
+  with check ( id = (select auth.uid()) and role = public.current_app_role() );
 
 -- agency_admin administra qualquer perfil (inclusive definir role).
+drop policy if exists profiles_admin_all on public.profiles;
 create policy profiles_admin_all
   on public.profiles for all
   to authenticated
@@ -302,18 +320,21 @@ create policy profiles_admin_all
 
 -- 8.2 clients --------------------------------------------------------------
 -- Ler: equipe Bernal vê todos; client_user vê só os que lhe foram associados.
+drop policy if exists clients_select_accessible on public.clients;
 create policy clients_select_accessible
   on public.clients for select
   to authenticated
   using ( public.can_access_client(id) );
 
 -- Criar: qualquer membro da equipe (agency_admin ou agency_member).
+drop policy if exists clients_insert_agency on public.clients;
 create policy clients_insert_agency
   on public.clients for insert
   to authenticated
   with check ( public.is_agency() );
 
 -- Editar: qualquer membro da equipe.
+drop policy if exists clients_update_agency on public.clients;
 create policy clients_update_agency
   on public.clients for update
   to authenticated
@@ -321,6 +342,7 @@ create policy clients_update_agency
   with check ( public.is_agency() );
 
 -- Excluir: somente agency_admin (o fluxo normal é arquivar via status).
+drop policy if exists clients_delete_admin on public.clients;
 create policy clients_delete_admin
   on public.clients for delete
   to authenticated
@@ -328,12 +350,14 @@ create policy clients_delete_admin
 
 -- 8.3 client_users ------------------------------------------------------------
 -- Ler: equipe Bernal vê tudo; um client_user vê as próprias associações.
+drop policy if exists client_users_select_self_or_agency on public.client_users;
 create policy client_users_select_self_or_agency
   on public.client_users for select
   to authenticated
   using ( public.is_agency() or user_id = (select auth.uid()) );
 
 -- Gerenciar quem acessa o quê: somente agency_admin.
+drop policy if exists client_users_admin_write on public.client_users;
 create policy client_users_admin_write
   on public.client_users for all
   to authenticated
@@ -342,23 +366,27 @@ create policy client_users_admin_write
 
 -- 8.4 dashboard_configs ----------------------------------------------------
 -- Ler: mesma visibilidade do cliente correspondente.
+drop policy if exists dashboard_configs_select_accessible on public.dashboard_configs;
 create policy dashboard_configs_select_accessible
   on public.dashboard_configs for select
   to authenticated
   using ( public.can_access_client(client_id) );
 
 -- Criar/editar a configuração: equipe Bernal. client_user é somente leitura.
+drop policy if exists dashboard_configs_insert_agency on public.dashboard_configs;
 create policy dashboard_configs_insert_agency
   on public.dashboard_configs for insert
   to authenticated
   with check ( public.is_agency() );
 
+drop policy if exists dashboard_configs_update_agency on public.dashboard_configs;
 create policy dashboard_configs_update_agency
   on public.dashboard_configs for update
   to authenticated
   using ( public.is_agency() )
   with check ( public.is_agency() );
 
+drop policy if exists dashboard_configs_delete_admin on public.dashboard_configs;
 create policy dashboard_configs_delete_admin
   on public.dashboard_configs for delete
   to authenticated
