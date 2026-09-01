@@ -29,6 +29,7 @@
   /* Sinais de performance (sóbrios, sem neon) */
   --bernal-positive: #3dd68c;
   --bernal-negative: #f2555a;
+  --bernal-warning: #f5a524;
   --bernal-neutral: #cac9ca;
 
   /* Escala de gráficos — accent + neutros derivados do cinza institucional */
@@ -54,6 +55,7 @@
 
   --color-positive: var(--bernal-positive);
   --color-negative: var(--bernal-negative);
+  --color-warning: var(--bernal-warning);
   --color-neutral: var(--bernal-neutral);
 
   --color-chart-1: var(--bernal-chart-1);
