@@ -1,31 +1,19 @@
 "use client";
 
-import { useState } from "react";
-import { MoreHorizontal, Pencil, Share2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Check, MoreHorizontal, Pencil, Share2 } from "lucide-react";
+import type { DashboardConfigValue } from "@/lib/dashboard-config";
 import { Button } from "@/components/ui/button";
 import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
 import { Modal } from "@/components/ui/modal";
+import { DashboardEditor } from "./dashboard-editor";
 
-type ActionKey = "edit" | "share" | "export" | "duplicate";
+type PlaceholderKey = "share" | "export" | "duplicate";
 
-const ACTION_CONTENT: Record<
-  ActionKey,
+const PLACEHOLDER: Record<
+  PlaceholderKey,
   { title: string; intro: string; items: string[] }
 > = {
-  edit: {
-    title: "Editar dashboard",
-    intro:
-      "A configuração de dashboard é salva por cliente. Nesta fase o layout é fixo; futuramente será possível:",
-    items: [
-      "escolher quais métricas aparecem",
-      "escolher e ordenar os cards",
-      "escolher e ordenar os gráficos",
-      "escolher as tabelas exibidas",
-      "reorganizar os componentes livremente",
-      "salvar a configuração para este cliente",
-      "aplicar e reutilizar templates",
-    ],
-  },
   share: {
     title: "Compartilhar dashboard",
     intro:
@@ -50,18 +38,49 @@ const ACTION_CONTENT: Record<
   },
 };
 
-export function DashboardHeaderActions() {
-  const [open, setOpen] = useState<ActionKey | null>(null);
-  const content = open ? ACTION_CONTENT[open] : null;
+interface DashboardHeaderActionsProps {
+  clientId: string;
+  config: DashboardConfigValue;
+}
+
+export function DashboardHeaderActions({
+  clientId,
+  config,
+}: DashboardHeaderActionsProps) {
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [placeholder, setPlaceholder] = useState<PlaceholderKey | null>(null);
+  const [savedAt, setSavedAt] = useState(0);
+
+  useEffect(() => {
+    if (!savedAt) return;
+    const timer = setTimeout(() => setSavedAt(0), 3500);
+    return () => clearTimeout(timer);
+  }, [savedAt]);
+
+  const placeholderContent = placeholder ? PLACEHOLDER[placeholder] : null;
 
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="secondary" size="sm" onClick={() => setOpen("edit")}>
+        {savedAt > 0 && (
+          <span className="inline-flex items-center gap-1 rounded-full border border-positive/30 bg-positive/10 px-2.5 py-1 text-xs text-positive">
+            <Check className="size-3.5" />
+            Dashboard salvo
+          </span>
+        )}
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setEditorOpen(true)}
+        >
           <Pencil className="size-3.5" />
           Editar dashboard
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => setOpen("share")}>
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setPlaceholder("share")}
+        >
           <Share2 className="size-3.5" />
           Compartilhar
         </Button>
@@ -73,32 +92,41 @@ export function DashboardHeaderActions() {
             </span>
           }
         >
-          <DropdownItem onSelect={() => setOpen("export")}>
+          <DropdownItem onSelect={() => setPlaceholder("export")}>
             Exportar PDF
           </DropdownItem>
-          <DropdownItem onSelect={() => setOpen("duplicate")}>
+          <DropdownItem onSelect={() => setPlaceholder("duplicate")}>
             Duplicar
           </DropdownItem>
         </Dropdown>
       </div>
 
+      {editorOpen && (
+        <DashboardEditor
+          clientId={clientId}
+          initialConfig={config}
+          onClose={() => setEditorOpen(false)}
+          onSaved={() => setSavedAt(Date.now())}
+        />
+      )}
+
       <Modal
-        open={content !== null}
-        onClose={() => setOpen(null)}
-        title={content?.title ?? ""}
+        open={placeholderContent !== null}
+        onClose={() => setPlaceholder(null)}
+        title={placeholderContent?.title ?? ""}
         description="Recurso previsto para uma fase futura."
         footer={
-          <Button variant="secondary" onClick={() => setOpen(null)}>
+          <Button variant="secondary" onClick={() => setPlaceholder(null)}>
             Fechar
           </Button>
         }
       >
-        {content && (
+        {placeholderContent && (
           <div className="space-y-3 text-sm text-muted">
-            <p>{content.intro}</p>
-            {content.items.length > 0 && (
+            <p>{placeholderContent.intro}</p>
+            {placeholderContent.items.length > 0 && (
               <ul className="list-disc space-y-1 pl-5">
-                {content.items.map((item) => (
+                {placeholderContent.items.map((item) => (
                   <li key={item}>{item}</li>
                 ))}
               </ul>

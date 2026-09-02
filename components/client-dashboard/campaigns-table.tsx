@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { CampaignStatusBadge } from "@/components/shared/status-badges";
@@ -9,7 +9,16 @@ import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import type { DashboardCampaignRow } from "@/server/client-dashboard";
 import type { CampaignStatus, ResultMetricConfig } from "@/types/domain";
 
-type SortKey = "spend" | "results" | "costPerResult" | "ctr" | "cpm";
+type SortKey =
+  | "spend"
+  | "results"
+  | "costPerResult"
+  | "reach"
+  | "impressions"
+  | "clicks"
+  | "ctr"
+  | "cpc"
+  | "cpm";
 type SortDir = "asc" | "desc";
 type StatusFilter = "all" | CampaignStatus;
 
@@ -20,9 +29,95 @@ const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
   { value: "ended", label: "Encerradas" },
 ];
 
+interface ColumnDef {
+  header: string;
+  render: (row: DashboardCampaignRow) => ReactNode;
+  align?: "left" | "right";
+  sortKey?: SortKey;
+}
+
+function currencyOrDash(value: number, hasBase: boolean) {
+  return hasBase ? (
+    <span className="tabular-nums">{formatCurrency(value)}</span>
+  ) : (
+    <span className="text-muted">—</span>
+  );
+}
+
+function columnDefs(metric: ResultMetricConfig): Record<string, ColumnDef> {
+  return {
+    campaign: {
+      header: "Campanha",
+      render: (r) => <span className="font-medium text-foreground">{r.name}</span>,
+    },
+    status: {
+      header: "Status",
+      render: (r) => <CampaignStatusBadge status={r.status} />,
+    },
+    investment: {
+      header: "Investimento",
+      align: "right",
+      sortKey: "spend",
+      render: (r) => <span className="tabular-nums">{formatCurrency(r.spend)}</span>,
+    },
+    results: {
+      header: metric.resultLabel,
+      align: "right",
+      sortKey: "results",
+      render: (r) => <span className="tabular-nums">{formatNumber(r.results)}</span>,
+    },
+    cost_per_result: {
+      header: metric.costLabel,
+      align: "right",
+      sortKey: "costPerResult",
+      render: (r) => currencyOrDash(r.costPerResult, r.results > 0),
+    },
+    reach: {
+      header: "Alcance",
+      align: "right",
+      sortKey: "reach",
+      render: (r) => <span className="tabular-nums">{formatNumber(r.reach)}</span>,
+    },
+    impressions: {
+      header: "Impressões",
+      align: "right",
+      sortKey: "impressions",
+      render: (r) => (
+        <span className="tabular-nums">{formatNumber(r.impressions)}</span>
+      ),
+    },
+    clicks: {
+      header: "Cliques",
+      align: "right",
+      sortKey: "clicks",
+      render: (r) => <span className="tabular-nums">{formatNumber(r.clicks)}</span>,
+    },
+    ctr: {
+      header: "CTR",
+      align: "right",
+      sortKey: "ctr",
+      render: (r) => <span className="tabular-nums">{formatPercent(r.ctr, 2)}</span>,
+    },
+    cpc: {
+      header: "CPC",
+      align: "right",
+      sortKey: "cpc",
+      render: (r) => currencyOrDash(r.cpc, r.clicks > 0),
+    },
+    cpm: {
+      header: "CPM",
+      align: "right",
+      sortKey: "cpm",
+      render: (r) => <span className="tabular-nums">{formatCurrency(r.cpm)}</span>,
+    },
+  };
+}
+
 interface CampaignsTableProps {
   rows: DashboardCampaignRow[];
   resultMetric: ResultMetricConfig;
+  /** Chaves de coluna habilitadas, na ordem (começa sempre por "campaign"). */
+  columns: string[];
 }
 
 function SortHeader({
@@ -34,7 +129,7 @@ function SortHeader({
 }: {
   label: string;
   sortKey: SortKey;
-  activeKey: SortKey;
+  activeKey: SortKey | null;
   dir: SortDir;
   onToggle: (key: SortKey) => void;
 }) {
@@ -55,10 +150,20 @@ function SortHeader({
   );
 }
 
-export function CampaignsTable({ rows, resultMetric }: CampaignsTableProps) {
+export function CampaignsTable({
+  rows,
+  resultMetric,
+  columns: columnKeys,
+}: CampaignsTableProps) {
+  const defs = useMemo(() => columnDefs(resultMetric), [resultMetric]);
+  const activeKeys = columnKeys.filter((k) => defs[k]);
+  const firstSortable =
+    (activeKeys.map((k) => defs[k]?.sortKey).find(Boolean) as SortKey | undefined) ??
+    null;
+
   const [status, setStatus] = useState<StatusFilter>("all");
-  const [sort, setSort] = useState<{ key: SortKey; dir: SortDir }>({
-    key: "spend",
+  const [sort, setSort] = useState<{ key: SortKey | null; dir: SortDir }>({
+    key: activeKeys.includes("investment") ? "spend" : firstSortable,
     dir: "desc",
   });
 
@@ -73,79 +178,35 @@ export function CampaignsTable({ rows, resultMetric }: CampaignsTableProps) {
   const visibleRows = useMemo(() => {
     const filtered =
       status === "all" ? rows : rows.filter((r) => r.status === status);
+    if (!sort.key) return filtered;
+    const key = sort.key;
     const factor = sort.dir === "asc" ? 1 : -1;
-    return [...filtered].sort((a, b) => (a[sort.key] - b[sort.key]) * factor);
+    return [...filtered].sort((a, b) => (a[key] - b[key]) * factor);
   }, [rows, status, sort]);
 
-  const sortHeader = (label: string, sortKey: SortKey) => (
-    <SortHeader
-      label={label}
-      sortKey={sortKey}
-      activeKey={sort.key}
-      dir={sort.dir}
-      onToggle={toggleSort}
-    />
-  );
-
-  const columns: readonly Column<DashboardCampaignRow>[] = [
-    {
-      key: "name",
-      header: "Campanha",
-      render: (row) => (
-        <span className="font-medium text-foreground">{row.name}</span>
-      ),
-    },
-    {
-      key: "spend",
-      header: sortHeader("Investimento", "spend"),
-      align: "right",
-      render: (row) => (
-        <span className="tabular-nums">{formatCurrency(row.spend)}</span>
-      ),
-    },
-    {
-      key: "results",
-      header: sortHeader(resultMetric.resultLabel, "results"),
-      align: "right",
-      render: (row) => (
-        <span className="tabular-nums">{formatNumber(row.results)}</span>
-      ),
-    },
-    {
-      key: "cpr",
-      header: sortHeader(resultMetric.costLabel, "costPerResult"),
-      align: "right",
-      render: (row) =>
-        row.results > 0 ? (
-          <span className="tabular-nums">
-            {formatCurrency(row.costPerResult)}
-          </span>
+  const tableColumns: readonly Column<DashboardCampaignRow>[] = activeKeys.map(
+    (key) => {
+      const def = defs[key];
+      const header =
+        def.sortKey != null ? (
+          <SortHeader
+            label={def.header}
+            sortKey={def.sortKey}
+            activeKey={sort.key}
+            dir={sort.dir}
+            onToggle={toggleSort}
+          />
         ) : (
-          <span className="text-muted">—</span>
-        ),
+          def.header
+        );
+      return {
+        key,
+        header,
+        align: def.align ?? "left",
+        render: def.render,
+      };
     },
-    {
-      key: "ctr",
-      header: sortHeader("CTR", "ctr"),
-      align: "right",
-      render: (row) => (
-        <span className="tabular-nums">{formatPercent(row.ctr, 2)}</span>
-      ),
-    },
-    {
-      key: "cpm",
-      header: sortHeader("CPM", "cpm"),
-      align: "right",
-      render: (row) => (
-        <span className="tabular-nums">{formatCurrency(row.cpm)}</span>
-      ),
-    },
-    {
-      key: "status",
-      header: "Status",
-      render: (row) => <CampaignStatusBadge status={row.status} />,
-    },
-  ];
+  );
 
   return (
     <div className="flex flex-col gap-3">
@@ -168,7 +229,7 @@ export function CampaignsTable({ rows, resultMetric }: CampaignsTableProps) {
       </div>
 
       <DataTable
-        columns={columns}
+        columns={tableColumns}
         data={visibleRows}
         getRowId={(row) => row.id}
         emptyMessage="Nenhuma campanha com os filtros atuais."

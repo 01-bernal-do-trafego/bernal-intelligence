@@ -5,10 +5,25 @@ import { ChevronLeft, Info } from "lucide-react";
 import { notFound } from "next/navigation";
 import { parsePeriod } from "@/lib/date-range";
 import { zipSeries } from "@/lib/series";
-import { formatCurrency, formatNumber } from "@/lib/format";
-import type { Comparison } from "@/lib/comparison";
+import {
+  formatCurrency,
+  formatDecimal,
+  formatNumber,
+  formatPercent,
+} from "@/lib/format";
+import {
+  CARD_METRIC_KEY,
+  CHART_MAPPING,
+  cardLabel,
+  chartTitle,
+  enabledKeys,
+} from "@/lib/dashboard-config";
 import { getClientRecord } from "@/server/clients";
-import { getClientDashboard } from "@/server/client-dashboard";
+import {
+  getClientDashboard,
+  type DashboardMetric,
+  type MetricKey,
+} from "@/server/client-dashboard";
 import { ClientStatusBadge, MetaStatusBadge } from "@/components/shared/status-badges";
 import { EditClientButton } from "@/components/clients/edit-client-dialog";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
@@ -39,13 +54,30 @@ export async function generateMetadata({
   return { title: client ? client.name : "Cliente" };
 }
 
-function delta(comparison: Comparison, compare: boolean): MetricDelta | null {
+function metricDelta(
+  metric: DashboardMetric,
+  compare: boolean,
+): MetricDelta | null {
   if (!compare) return null;
   return {
-    changePct: comparison.changePct,
-    direction: comparison.direction,
-    sentiment: comparison.sentiment,
+    changePct: metric.comparison.changePct,
+    direction: metric.comparison.direction,
+    sentiment: metric.comparison.sentiment,
   };
+}
+
+function metricValue(metric: DashboardMetric): string {
+  const value = metric.comparison.current;
+  switch (metric.format) {
+    case "currency":
+      return formatCurrency(value);
+    case "percent":
+      return formatPercent(value, 2);
+    case "decimal":
+      return formatDecimal(value);
+    default:
+      return formatNumber(value);
+  }
 }
 
 export default async function ClientDashboardPage({
@@ -59,7 +91,7 @@ export default async function ClientDashboardPage({
   if (!client) notFound();
 
   const compare = sp.compare === "1";
-  const dashboard = getClientDashboard({
+  const dashboard = await getClientDashboard({
     client,
     preset: parsePeriod(sp.period),
     compare,
@@ -67,7 +99,11 @@ export default async function ClientDashboardPage({
     campaignId: sp.campaign,
   });
 
-  const { kpis, series, resultMetric } = dashboard;
+  const { config, metrics, series, resultMetric } = dashboard;
+
+  const cardKeys = enabledKeys(config.layout.cards);
+  const chartKeys = enabledKeys(config.layout.charts);
+  const columnKeys = enabledKeys(config.layout.tableColumns);
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-8">
@@ -102,7 +138,7 @@ export default async function ClientDashboardPage({
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <EditClientButton client={client} />
-            <DashboardHeaderActions />
+            <DashboardHeaderActions clientId={client.id} config={config} />
           </div>
         </div>
       </header>
@@ -110,10 +146,11 @@ export default async function ClientDashboardPage({
       <div className="flex items-start gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
         <Info className="mt-0.5 size-4 shrink-0 text-accent" />
         <p>
-          Os números de performance abaixo (investimento, resultados, campanhas
-          e gráficos) são <span className="text-foreground">demonstrativos</span>{" "}
-          e serão substituídos pela integração com a Meta Ads. O nome e o status
-          do cliente já são reais.
+          A configuração deste dashboard (métrica, cards, gráficos e colunas) já
+          é <span className="text-foreground">real e salva por cliente</span>. Os
+          valores de performance ainda são{" "}
+          <span className="text-foreground">demonstrativos</span> e serão
+          substituídos pela integração com a Meta Ads.
         </p>
       </div>
 
@@ -136,79 +173,62 @@ export default async function ClientDashboardPage({
           <h2 className="text-base font-semibold text-foreground">Performance</h2>
           <Badge tone="muted">Dados demonstrativos</Badge>
         </div>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            label="Investimento"
-            value={formatCurrency(kpis.spend.current)}
-            delta={delta(kpis.spend, compare)}
-          />
-          <MetricCard
-            label={resultMetric.resultLabel}
-            value={formatNumber(kpis.results.current)}
-            delta={delta(kpis.results, compare)}
-          />
-          <MetricCard
-            label={resultMetric.costLabel}
-            value={formatCurrency(kpis.costPerResult.current)}
-            delta={delta(kpis.costPerResult, compare)}
-          />
-          <MetricCard
-            label="Alcance"
-            value={formatNumber(kpis.reach.current)}
-            delta={delta(kpis.reach, compare)}
-          />
-        </div>
+        {cardKeys.length === 0 ? (
+          <p className="text-sm text-muted">Nenhum card selecionado no editor.</p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            {cardKeys.map((key) => {
+              const metricKey = (CARD_METRIC_KEY[key] ?? key) as MetricKey;
+              const metric = metrics[metricKey];
+              if (!metric) return null;
+              return (
+                <MetricCard
+                  key={key}
+                  label={cardLabel(key, resultMetric)}
+                  value={metricValue(metric)}
+                  delta={metricDelta(metric, compare)}
+                />
+              );
+            })}
+          </div>
+        )}
       </section>
 
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-        <ChartContainer
-          title={`${resultMetric.resultLabel} ao longo do tempo`}
-          isEmpty={series.results.current.every((d) => d.value === 0)}
-        >
-          <TrendChart
-            data={zipSeries(series.results.current, series.results.previous)}
-            variant="area"
-            seriesLabel={resultMetric.resultLabel}
-            format="number"
-            comparisonBehavior="higher_is_better"
-          />
-        </ChartContainer>
-
-        <ChartContainer
-          title="Investimento ao longo do tempo"
-          isEmpty={series.spend.current.every((d) => d.value === 0)}
-        >
-          <TrendChart
-            data={zipSeries(series.spend.current, series.spend.previous)}
-            variant="area"
-            seriesLabel="Investimento"
-            format="currency"
-          />
-        </ChartContainer>
-
-        <ChartContainer
-          title={resultMetric.costLabel}
-          className="xl:col-span-2"
-          isEmpty={series.costPerResult.current.every((d) => d.value === 0)}
-        >
-          <TrendChart
-            data={zipSeries(
-              series.costPerResult.current,
-              series.costPerResult.previous,
-            )}
-            variant="line"
-            seriesLabel={resultMetric.costLabel}
-            format="currency"
-            comparisonBehavior="lower_is_better"
-          />
-        </ChartContainer>
-      </div>
+      {chartKeys.length > 0 && (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+          {chartKeys.map((key) => {
+            const mapping = CHART_MAPPING[key];
+            if (!mapping) return null;
+            const pair = series[mapping.series];
+            if (!pair) return null;
+            const behavior = mapping.usesMetricBehavior
+              ? resultMetric.behavior
+              : mapping.behavior;
+            return (
+              <ChartContainer
+                key={key}
+                title={chartTitle(key, resultMetric)}
+                isEmpty={pair.current.every((d) => d.value === 0)}
+              >
+                <TrendChart
+                  data={zipSeries(pair.current, pair.previous)}
+                  variant={key === "cost_per_result_over_time" ? "line" : "area"}
+                  seriesLabel={chartTitle(key, resultMetric)}
+                  format={mapping.format}
+                  comparisonBehavior={behavior}
+                />
+              </ChartContainer>
+            );
+          })}
+        </div>
+      )}
 
       <section className="flex flex-col gap-3">
         <h2 className="text-base font-semibold text-foreground">Campanhas</h2>
         <CampaignsTable
           rows={dashboard.campaignRows}
           resultMetric={resultMetric}
+          columns={columnKeys}
         />
       </section>
     </div>

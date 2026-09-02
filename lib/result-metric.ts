@@ -1,41 +1,57 @@
 import type { ResultMetricConfig, ResultMetricType } from "@/types/domain";
 
 /**
- * Presets de rótulo para a conversão principal de cada cliente. A métrica
- * numérica ("results") é a mesma em todo o sistema; o que muda por cliente
- * é o significado e o rótulo exibido.
+ * Presets da conversão principal. O `type` é o id estável salvo em
+ * `dashboard_configs.result_metric`; `resultLabel` é o nome exibido padrão e
+ * `behavior` a classificação padrão (o editor pode sobrescrever ambos).
  */
 export const RESULT_METRIC_PRESETS: Record<ResultMetricType, ResultMetricConfig> =
   {
-    lead: { type: "lead", resultLabel: "Leads", costLabel: "Custo por lead" },
-    purchase: {
-      type: "purchase",
+    leads: {
+      type: "leads",
+      resultLabel: "Leads",
+      costLabel: "Custo por lead",
+      behavior: "higher_is_better",
+    },
+    purchases: {
+      type: "purchases",
       resultLabel: "Compras",
       costLabel: "Custo por compra",
+      behavior: "higher_is_better",
     },
-    conversation: {
-      type: "conversation",
+    conversations: {
+      type: "conversations",
       resultLabel: "Conversas",
       costLabel: "Custo por conversa",
+      behavior: "higher_is_better",
     },
-    signup: {
-      type: "signup",
+    registrations: {
+      type: "registrations",
       resultLabel: "Cadastros",
       costLabel: "Custo por cadastro",
+      behavior: "higher_is_better",
     },
-    scheduling: {
-      type: "scheduling",
+    appointments: {
+      type: "appointments",
       resultLabel: "Agendamentos",
       costLabel: "Custo por agendamento",
+      behavior: "higher_is_better",
+    },
+    results: {
+      type: "results",
+      resultLabel: "Resultados",
+      costLabel: "Custo por resultado",
+      behavior: "higher_is_better",
     },
     custom: {
       type: "custom",
       resultLabel: "Resultados",
       costLabel: "Custo por resultado",
+      behavior: "higher_is_better",
     },
   };
 
-export const DEFAULT_RESULT_METRIC = RESULT_METRIC_PRESETS.custom;
+export const DEFAULT_RESULT_METRIC = RESULT_METRIC_PRESETS.results;
 
 export function resultMetricOf(type: ResultMetricType): ResultMetricConfig {
   return RESULT_METRIC_PRESETS[type] ?? DEFAULT_RESULT_METRIC;

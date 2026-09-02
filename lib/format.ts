@@ -47,6 +47,16 @@ export function formatCompactNumber(value: number | null | undefined): string {
   return compact.format(finite(value));
 }
 
+export function formatDecimal(
+  value: number | null | undefined,
+  fractionDigits = 2,
+): string {
+  return finite(value).toLocaleString(LOCALE, {
+    minimumFractionDigits: fractionDigits,
+    maximumFractionDigits: fractionDigits,
+  });
+}
+
 export function formatPercent(
   value: number | null | undefined,
   fractionDigits = 1,

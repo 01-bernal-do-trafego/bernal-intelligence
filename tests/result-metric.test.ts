@@ -8,21 +8,23 @@ import {
 import type { ResultMetricType } from "@/types/domain";
 
 const ALL_TYPES: ResultMetricType[] = [
-  "lead",
-  "purchase",
-  "conversation",
-  "signup",
-  "scheduling",
+  "leads",
+  "purchases",
+  "conversations",
+  "registrations",
+  "appointments",
+  "results",
   "custom",
 ];
 
 describe("RESULT_METRIC_PRESETS", () => {
-  it("define rótulos para todos os tipos de resultado", () => {
+  it("define rótulos e comportamento para todos os tipos de resultado", () => {
     for (const type of ALL_TYPES) {
       const preset = RESULT_METRIC_PRESETS[type];
       expect(preset.type).toBe(type);
       expect(preset.resultLabel.length).toBeGreaterThan(0);
       expect(preset.costLabel.toLowerCase()).toContain("custo");
+      expect(preset.behavior).toBeDefined();
     }
   });
 

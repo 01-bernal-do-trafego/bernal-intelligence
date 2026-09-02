@@ -1,8 +1,12 @@
 /**
  * Modelo de domínio do Bernal Intelligence.
- * Nesta fase alimentado por dados mockados (lib/mock), mas os tipos já
+ * Nesta fase a performance ainda é mockada (lib/mock), mas os tipos já
  * refletem o formato que a integração real com Meta Ads deverá entregar.
  */
+
+import type { MetricBehavior } from "@/lib/comparison";
+
+export type { MetricBehavior };
 
 export type ClientStatus = "onboarding" | "active" | "paused" | "archived";
 
@@ -24,22 +28,26 @@ export const META_STATUS_LABEL: Record<MetaConnectionStatus, string> = {
 /**
  * Tipo da conversão principal de um cliente. O Bernal Intelligence é
  * multicliente: cada cliente define qual conversão é o "resultado" que
- * importa (e, por consequência, o "custo por resultado").
+ * importa (e, por consequência, o "custo por resultado"). O `type` é um id
+ * estável salvo em `dashboard_configs.result_metric`.
  */
 export type ResultMetricType =
-  | "lead"
-  | "purchase"
-  | "conversation"
-  | "signup"
-  | "scheduling"
+  | "leads"
+  | "purchases"
+  | "conversations"
+  | "registrations"
+  | "appointments"
+  | "results"
   | "custom";
 
 export interface ResultMetricConfig {
   type: ResultMetricType;
-  /** Rótulo plural para o total (ex.: "Compras"). */
+  /** Nome exibido (plural) para o total, ex.: "Compras". */
   resultLabel: string;
-  /** Rótulo do custo por unidade (ex.: "Custo por compra"). */
+  /** Rótulo do custo por unidade, ex.: "Custo por compra". */
   costLabel: string;
+  /** Como classificar a variação da métrica principal. */
+  behavior: MetricBehavior;
 }
 
 /**

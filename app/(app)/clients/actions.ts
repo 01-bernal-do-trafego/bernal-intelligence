@@ -7,6 +7,8 @@ import {
   parseClientInput,
   type ClientInput,
 } from "@/lib/client-input";
+import { sanitizeDashboardConfigInput } from "@/lib/dashboard-config";
+import { getClientRecord } from "@/server/clients";
 import { getSessionContext } from "@/supabase/auth";
 import { createSupabaseServerClient } from "@/supabase/server";
 
@@ -118,4 +120,37 @@ export async function archiveClient(id: string): Promise<ClientActionResult> {
 
   revalidateClient(id);
   return { ok: true, id };
+}
+
+/**
+ * Salva a configuração de dashboard do cliente em `public.dashboard_configs`.
+ * O `clientId` é validado no servidor (precisa existir e estar visível pela
+ * sessão); o payload passa por validação estrita antes de tocar o banco.
+ */
+export async function saveDashboardConfig(
+  clientId: string,
+  rawConfig: unknown,
+): Promise<ClientActionResult> {
+  const auth = await requireAgency();
+  if (!auth.ok) return auth;
+
+  const client = await getClientRecord(clientId);
+  if (!client) return { ok: false, error: "Cliente não encontrado." };
+
+  const parsed = sanitizeDashboardConfigInput(rawConfig);
+  if (!parsed.ok) return { ok: false, error: parsed.error };
+
+  const supabase = await createSupabaseServerClient();
+  const { error } = await supabase
+    .from("dashboard_configs")
+    .update({
+      result_metric: parsed.value.resultMetric,
+      layout: parsed.value.layout,
+    })
+    .eq("client_id", client.id);
+
+  if (error) return { ok: false, error: friendlyError(error) };
+
+  revalidatePath(`/clients/${client.id}`);
+  return { ok: true, id: client.id };
 }
