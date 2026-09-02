@@ -1,13 +1,9 @@
 "use client";
 
 import { LogOut, Menu, UserRound } from "lucide-react";
-import { signOut } from "@/app/(app)/actions";
 import { ROLE_LABEL, type AppRole } from "@/lib/roles";
-import {
-  Dropdown,
-  DropdownItem,
-  DropdownSeparator,
-} from "@/components/ui/dropdown";
+import { SignOutButton } from "@/components/auth/sign-out-button";
+import { Dropdown, DropdownSeparator } from "@/components/ui/dropdown";
 
 interface TopbarProps {
   onMenuClick: () => void;
@@ -67,12 +63,10 @@ export function Topbar({
           )}
         </div>
         <DropdownSeparator />
-        <form action={signOut}>
-          <DropdownItem type="submit" tone="danger">
-            <LogOut className="size-4" />
-            Sair
-          </DropdownItem>
-        </form>
+        <SignOutButton className="flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm text-negative transition-colors hover:bg-negative/10 disabled:cursor-not-allowed disabled:opacity-50">
+          <LogOut className="size-4" />
+          Sair
+        </SignOutButton>
       </Dropdown>
     </header>
   );

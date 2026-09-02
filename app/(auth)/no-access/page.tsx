@@ -1,6 +1,5 @@
 import type { Metadata } from "next";
-import { signOut } from "@/app/(app)/actions";
-import { Button } from "@/components/ui/button";
+import { SignOutButton } from "@/components/auth/sign-out-button";
 
 export const metadata: Metadata = { title: "Acesso não liberado" };
 
@@ -23,11 +22,9 @@ export default function NoAccessPage() {
           agência. Fale com um administrador da Bernal.
         </p>
 
-        <form action={signOut} className="mt-6">
-          <Button type="submit" variant="secondary" className="w-full">
-            Sair
-          </Button>
-        </form>
+        <SignOutButton className="mt-6 inline-flex h-10 w-full items-center justify-center gap-2 rounded-lg border border-border bg-surface-elevated text-sm font-medium text-foreground transition-colors hover:border-muted/40 disabled:cursor-not-allowed disabled:opacity-50">
+          Sair
+        </SignOutButton>
       </div>
     </main>
   );
