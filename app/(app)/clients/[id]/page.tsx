@@ -33,6 +33,7 @@ import {
 } from "@/components/shared/status-badges";
 import { ConnectMetaButton } from "@/components/clients/connect-meta-button";
 import { ManageMetaConnection } from "@/components/clients/manage-meta-connection";
+import { SyncMetaButton } from "@/components/clients/sync-meta-button";
 import { EditClientButton } from "@/components/clients/edit-client-dialog";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { MetricCard, type MetricDelta } from "@/components/ui/metric-card";
@@ -77,6 +78,7 @@ function metricDelta(
 }
 
 function metricValue(metric: DashboardMetric): string {
+  if (!metric.available) return "—";
   const value = metric.comparison.current;
   switch (metric.format) {
     case "currency":
@@ -207,108 +209,195 @@ export default async function ClientDashboardPage({
         </div>
       </header>
 
-      <div className="flex items-start gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
-        <Info className="mt-0.5 size-4 shrink-0 text-accent" />
-        <p>
-          A configuração deste dashboard (métrica, cards, gráficos e colunas) já
-          é <span className="text-foreground">real e salva por cliente</span>. Os
-          valores de performance ainda são{" "}
-          <span className="text-foreground">demonstrativos</span> e serão
-          substituídos pela integração com a Meta Ads.
-        </p>
-      </div>
-
-      <div className="flex flex-col gap-3 border-y border-border py-4">
-        <Suspense fallback={<div className="h-10" />}>
-          <DateRangePicker />
-        </Suspense>
-        <Suspense fallback={<div className="h-10" />}>
-          <DashboardScopeFilters
-            accounts={dashboard.accounts}
-            campaigns={dashboard.campaigns}
-            currentAccount={dashboard.filters.accountId}
-            currentCampaign={dashboard.filters.campaignId}
-          />
-        </Suspense>
-      </div>
-
-      <section className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <h2 className="text-base font-semibold text-foreground">Performance</h2>
-          <Badge tone="muted">Dados demonstrativos</Badge>
-        </div>
-        {cardKeys.length === 0 ? (
-          <p className="text-sm text-muted">Nenhum card selecionado no editor.</p>
-        ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {cardKeys.map((key) => {
-              const metricKey = (CARD_METRIC_KEY[key] ?? key) as MetricKey;
-              const metric = metrics[metricKey];
-              if (!metric) return null;
-              return (
-                <MetricCard
-                  key={key}
-                  label={cardLabel(key, resultMetric)}
-                  value={metricValue(metric)}
-                  delta={metricDelta(metric, compare)}
-                />
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      {enabledCharts.length > 0 && (
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {enabledCharts.map((chart) => {
-            const entry = chartMetricEntry(chart.metric);
-            const pair = entry?.seriesKey
-              ? series[entry.seriesKey]
-              : undefined;
-            const behavior = entry?.usesResultMetricBehavior
-              ? resultMetric.behavior
-              : (entry?.behavior ?? "neutral");
-
-            if (!entry || entry.requiresMeta || !pair) {
-              return (
-                <ChartContainer
-                  key={chart.id}
-                  title={chart.title}
-                  isEmpty
-                  emptyMessage="Métrica disponível após a integração com a Meta Ads."
-                >
-                  <div />
-                </ChartContainer>
-              );
-            }
-
-            return (
-              <ChartContainer
-                key={chart.id}
-                title={chart.title}
-                isEmpty={pair.current.every((d) => d.value === 0)}
-              >
-                <DashboardChart
-                  metric={chart.metric}
-                  visualization={chart.visualization}
-                  title={chart.title}
-                  data={zipSeries(pair.current, pair.previous)}
-                  comparisonBehavior={behavior}
-                />
-              </ChartContainer>
-            );
-          })}
+      {dashboard.dataStatus === "real" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-positive/30 bg-positive/10 px-4 py-3 text-sm">
+          <span className="text-positive">
+            Dados reais da Meta Ads
+            {dashboard.lastSyncAt
+              ? ` · sincronizado em ${new Date(dashboard.lastSyncAt).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}`
+              : ""}
+            {dashboard.lastSyncStatus === "partial" ? " · última sync parcial" : ""}
+          </span>
+          <SyncMetaButton clientId={client.id} />
         </div>
       )}
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-base font-semibold text-foreground">Campanhas</h2>
-        <CampaignsTable
-          rows={dashboard.campaignRows}
-          resultMetric={resultMetric}
-          columns={columnKeys}
-        />
-      </section>
+      {dashboard.dataStatus === "awaiting_sync" && (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm">
+          <span className="text-warning">
+            Meta Ads conectada. Rode a primeira sincronização para ver os dados
+            reais deste cliente.
+          </span>
+          <SyncMetaButton clientId={client.id} />
+        </div>
+      )}
+
+      {dashboard.dataStatus === "no_meta" && (
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
+          <Info className="mt-0.5 size-4 shrink-0 text-accent" />
+          <p>
+            Este cliente <span className="text-foreground">não tem a Meta Ads
+            conectada</span>. Conecte e sincronize para ver dados reais. Nenhum
+            número demonstrativo é exibido.
+          </p>
+        </div>
+      )}
+
+      {dashboard.dataStatus === "demo" && (
+        <div className="flex items-start gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
+          <Info className="mt-0.5 size-4 shrink-0 text-accent" />
+          <p>
+            Modo demonstração (desenvolvimento). A configuração do dashboard é
+            real; os <span className="text-foreground">valores são fictícios</span>.
+          </p>
+        </div>
+      )}
+
+      {dashboard.reachScopeNote && (
+        <div className="rounded-lg border border-border bg-surface px-4 py-2 text-xs text-muted">
+          {dashboard.reachScopeNote}
+        </div>
+      )}
+
+      {(dashboard.dataStatus === "real" || dashboard.dataStatus === "demo") && (
+        <>
+          <div className="flex flex-col gap-3 border-y border-border py-4">
+            {dashboard.dataStatus === "real" &&
+              dashboard.range.start &&
+              dashboard.range.end && (
+                <p className="text-xs text-muted">
+                  Período: {dashboard.range.start} → {dashboard.range.end}
+                  {dashboard.periodicInterval &&
+                  (dashboard.periodicInterval.from !== dashboard.range.start ||
+                    dashboard.periodicInterval.to !== dashboard.range.end)
+                    ? ` · alcance agregado: ${dashboard.periodicInterval.from} → ${dashboard.periodicInterval.to}`
+                    : ""}
+                </p>
+              )}
+            <Suspense fallback={<div className="h-10" />}>
+              <DateRangePicker />
+            </Suspense>
+            <Suspense fallback={<div className="h-10" />}>
+              <DashboardScopeFilters
+                accounts={dashboard.accounts}
+                campaigns={dashboard.campaigns}
+                currentAccount={dashboard.filters.accountId}
+                currentCampaign={dashboard.filters.campaignId}
+              />
+            </Suspense>
+          </div>
+
+          <section className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold text-foreground">
+                Performance
+              </h2>
+              {dashboard.mode === "demo" && (
+                <Badge tone="muted">Dados demonstrativos</Badge>
+              )}
+            </div>
+            {cardKeys.length === 0 ? (
+              <p className="text-sm text-muted">
+                Nenhum card selecionado no editor.
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                {cardKeys.map((key) => {
+                  const metricKey = (CARD_METRIC_KEY[key] ?? key) as MetricKey;
+                  const metric = metrics[metricKey];
+                  if (!metric) return null;
+                  return (
+                    <MetricCard
+                      key={key}
+                      label={cardLabel(key, resultMetric)}
+                      value={metricValue(metric)}
+                      delta={metricDelta(metric, compare)}
+                      hint={
+                        !metric.available ? metric.unavailableReason : undefined
+                      }
+                    />
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
+          {enabledCharts.length > 0 && (
+            <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+              {enabledCharts.map((chart) => {
+                const entry = chartMetricEntry(chart.metric);
+                const pair = entry?.seriesKey
+                  ? series[entry.seriesKey]
+                  : undefined;
+                const behavior = entry?.usesResultMetricBehavior
+                  ? resultMetric.behavior
+                  : (entry?.behavior ?? "neutral");
+
+                const metricKey = (CARD_METRIC_KEY[chart.metric] ??
+                  chart.metric) as MetricKey;
+                const metricState = metrics[metricKey];
+                const realUnavailable =
+                  dashboard.mode === "real" &&
+                  (!entry ||
+                    entry.requiresMeta ||
+                    (metricState && !metricState.available));
+
+                if (!entry || entry.requiresMeta || !pair || realUnavailable) {
+                  return (
+                    <ChartContainer
+                      key={chart.id}
+                      title={chart.title}
+                      isEmpty
+                      emptyMessage={
+                        realUnavailable && metricState?.unavailableReason
+                          ? metricState.unavailableReason
+                          : "Métrica disponível após a integração com a Meta Ads."
+                      }
+                    >
+                      <div />
+                    </ChartContainer>
+                  );
+                }
+
+                const isReachLike =
+                  chart.metric === "reach" || chart.metric === "frequency";
+
+                return (
+                  <ChartContainer
+                    key={chart.id}
+                    title={chart.title}
+                    isEmpty={pair.current.every((d) => d.value === 0)}
+                  >
+                    <DashboardChart
+                      metric={chart.metric}
+                      visualization={chart.visualization}
+                      title={chart.title}
+                      data={zipSeries(pair.current, pair.previous)}
+                      comparisonBehavior={behavior}
+                    />
+                    {dashboard.mode === "real" && isReachLike && (
+                      <p className="mt-2 text-[11px] text-muted">
+                        Cada ponto é o {chart.metric === "reach" ? "alcance" : "a frequência"} daquele dia.
+                        Não somável para o total do período.
+                      </p>
+                    )}
+                  </ChartContainer>
+                );
+              })}
+            </div>
+          )}
+
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold text-foreground">Campanhas</h2>
+            <CampaignsTable
+              rows={dashboard.campaignRows}
+              resultMetric={resultMetric}
+              columns={columnKeys}
+              unavailableColumns={dashboard.unavailableMetricKeys}
+            />
+          </section>
+        </>
+      )}
     </div>
   );
 }

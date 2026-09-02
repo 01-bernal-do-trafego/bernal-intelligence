@@ -36,8 +36,21 @@ import {
 const GRAPH_BASE = Deno.env.get("META_GRAPH_BASE") ?? "https://graph.facebook.com";
 const GRAPH_VERSION = Deno.env.get("META_GRAPH_VERSION") ?? "v26.0";
 const ATTR_WINDOW = "7d_click_1d_view";
-const PERIOD_KEY = "last_30d";
-const DATE_PRESET = "last_30d";
+const DATE_PRESET = "last_30d"; // série diária: janela de 30 dias
+
+// Agregados de período: um por preset. A unicidade em meta_insights_periodic é
+// o INTERVALO (date_from,date_to) — o preset é só rótulo. Assim reach/frequency
+// ficam disponíveis para qualquer preset do dashboard, sem somar diário.
+const PERIODIC_PRESETS = [
+  "today",
+  "yesterday",
+  "last_7d",
+  "last_14d",
+  "last_30d",
+  "this_month",
+  "last_month",
+] as const;
+type PeriodicPreset = (typeof PERIODIC_PRESETS)[number];
 
 // deno-lint-ignore no-explicit-any
 type AnyClient = any;
@@ -62,17 +75,51 @@ function ts(v: unknown): string | null {
 function s(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
+const isoDate = (d: Date) => d.toISOString().slice(0, 10);
+const addDays = (base: string, n: number) => {
+  const d = new Date(`${base}T00:00:00Z`);
+  d.setUTCDate(d.getUTCDate() + n);
+  return isoDate(d);
+};
+
+/** "Hoje" no fuso IANA da conta (a Meta reporta insights no fuso da conta). */
+function accountToday(timezoneName: string | null): string {
+  const tz = timezoneName || "UTC";
+  try {
+    // en-CA => "YYYY-MM-DD"
+    return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
+  } catch {
+    return isoDate(new Date());
+  }
+}
+
 /**
- * Fallback do intervalo `last_30d` (a Meta = últimos 30 dias SEM hoje). Só
- * usado se a resposta agregada não trouxer `date_start`/`date_stop`; o valor
- * autoritativo é o que a Meta devolve, gravado por linha. Cada sincronização
- * grava o SEU intervalo -> `last_30d` de dias diferentes convivem.
+ * Fallback do intervalo de um preset, com a SEMÂNTICA DA META (last_Nd sem
+ * hoje; this_month 1º->hoje; last_month mês anterior). Só usado se a resposta
+ * agregada não trouxer date_start/date_stop — o valor autoritativo é o da Meta.
  */
-function last30dRange(): { from: string; to: string } {
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  const to = new Date(Date.now() - 1 * 86400000); // ontem
-  const from = new Date(to.getTime() - 29 * 86400000); // 30 dias, sem hoje
-  return { from: iso(from), to: iso(to) };
+function presetRange(preset: PeriodicPreset, today: string): { from: string; to: string } {
+  const y = addDays(today, -1);
+  const [yy, mm] = today.split("-").map(Number);
+  switch (preset) {
+    case "today":
+      return { from: today, to: today };
+    case "yesterday":
+      return { from: y, to: y };
+    case "last_7d":
+      return { from: addDays(y, -6), to: y };
+    case "last_14d":
+      return { from: addDays(y, -13), to: y };
+    case "last_30d":
+      return { from: addDays(y, -29), to: y };
+    case "this_month":
+      return { from: `${today.slice(0, 7)}-01`, to: today };
+    case "last_month": {
+      const start = new Date(Date.UTC(yy, mm - 2, 1));
+      const end = new Date(Date.UTC(yy, mm - 1, 0));
+      return { from: isoDate(start), to: isoDate(end) };
+    }
+  }
 }
 
 Deno.serve(async (req: Request) => {
@@ -144,13 +191,14 @@ Deno.serve(async (req: Request) => {
   // contas vinculadas
   const { data: accts } = await admin
     .from("meta_ad_accounts")
-    .select("id, ad_account_id, currency")
+    .select("id, ad_account_id, currency, timezone_name")
     .eq("client_id", clientId)
     .eq("is_linked", true);
   const accounts = (accts ?? []) as Array<{
     id: string;
     ad_account_id: string;
     currency: string | null;
+    timezone_name: string | null;
   }>;
   if (accounts.length === 0) return json({ error: "no_linked_account" }, 409);
 
@@ -175,11 +223,15 @@ Deno.serve(async (req: Request) => {
     return json({ error: "decrypt_failed" }, 500);
   }
 
-  const range = last30dRange();
   const graph = { graphBase: GRAPH_BASE, version: GRAPH_VERSION, token };
   const results: Array<Record<string, unknown>> = [];
+  let envelopeRange = presetRange("last_30d", accountToday(null));
 
   for (const acc of accounts) {
+    const today = accountToday(acc.timezone_name);
+    const range = presetRange("last_30d", today); // janela primária do run
+    envelopeRange = range;
+
     // ---- acquire (trava de concorrência) --------------------------------
     let runId: string;
     try {
@@ -407,15 +459,35 @@ Deno.serve(async (req: Request) => {
       }
       if (fatal) break;
 
-      // agregado (sem time_increment) -> meta_insights_periodic (RPC)
+      // agregado (sem time_increment) -> meta_insights_periodic, UM POR PRESET.
+      // A unicidade é o intervalo, então os 7 presets convivem e o dashboard
+      // acha reach/frequency de qualquer período sem somar diário.
       try {
-        const { rows, pages } = await listInsights({
-          ...graph,
-          adAccountId: acc.ad_account_id,
-          level,
-          datePreset: DATE_PRESET,
-        });
-        const periodic = toPeriodicRows(rows, ctxFor(level), PERIOD_KEY, range.from, range.to);
+        const periodic: unknown[] = [];
+        let pages = 0;
+        let anyPreset = false;
+        for (const preset of PERIODIC_PRESETS) {
+          const fb = presetRange(preset, today);
+          try {
+            const res = await listInsights({
+              ...graph,
+              adAccountId: acc.ad_account_id,
+              level,
+              datePreset: preset,
+            });
+            pages += res.pages;
+            anyPreset = true;
+            periodic.push(
+              ...toPeriodicRows(res.rows, ctxFor(level), preset, fb.from, fb.to),
+            );
+          } catch (pe) {
+            if (pe instanceof GraphApiError && pe.kind === "token_revoked") {
+              fatal = "token_revoked";
+              throw pe;
+            }
+            // preset isolado falhou (rate limit etc.) -> segue os outros
+          }
+        }
         let written = 0;
         if (periodic.length) {
           const { data: n, error } = await admin.rpc("meta_upsert_insights_periodic", {
@@ -426,7 +498,12 @@ Deno.serve(async (req: Request) => {
           if (error) throw new Error(`upsert periodic ${level}: ${error.message}`);
           written = typeof n === "number" ? n : periodic.length;
         }
-        stages.push({ stage: `insights_periodic_${level}`, outcome: "done", rows: written, pages });
+        stages.push({
+          stage: `insights_periodic_${level}`,
+          outcome: anyPreset ? "done" : "error",
+          rows: written,
+          pages,
+        });
       } catch (e) {
         if (e instanceof GraphApiError && e.kind === "token_revoked") fatal = "token_revoked";
         stages.push({
@@ -484,5 +561,10 @@ Deno.serve(async (req: Request) => {
   }
 
   const anyOk = results.some((r) => r.status === "success" || r.status === "partial");
-  return json({ status: anyOk ? "ok" : "error", dateFrom: range.from, dateTo: range.to, results });
+  return json({
+    status: anyOk ? "ok" : "error",
+    dateFrom: envelopeRange.from,
+    dateTo: envelopeRange.to,
+    results,
+  });
 });

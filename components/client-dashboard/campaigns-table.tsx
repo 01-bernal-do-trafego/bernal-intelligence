@@ -118,6 +118,8 @@ interface CampaignsTableProps {
   resultMetric: ResultMetricConfig;
   /** Chaves de coluna habilitadas, na ordem (começa sempre por "campaign"). */
   columns: string[];
+  /** Colunas sem dado real nesta fase — renderizadas como "—". */
+  unavailableColumns?: string[];
 }
 
 function SortHeader({
@@ -154,8 +156,13 @@ export function CampaignsTable({
   rows,
   resultMetric,
   columns: columnKeys,
+  unavailableColumns = [],
 }: CampaignsTableProps) {
   const defs = useMemo(() => columnDefs(resultMetric), [resultMetric]);
+  const unavailable = useMemo(
+    () => new Set(unavailableColumns),
+    [unavailableColumns],
+  );
   const activeKeys = columnKeys.filter((k) => defs[k]);
   const firstSortable =
     (activeKeys.map((k) => defs[k]?.sortKey).find(Boolean) as SortKey | undefined) ??
@@ -203,7 +210,9 @@ export function CampaignsTable({
         key,
         header,
         align: def.align ?? "left",
-        render: def.render,
+        render: unavailable.has(key)
+          ? () => <span className="text-muted">—</span>
+          : def.render,
       };
     },
   );

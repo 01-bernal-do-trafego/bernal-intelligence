@@ -14,6 +14,8 @@ import type {
 } from "@/types/domain";
 import type { ClientRecord } from "@/types/client";
 import { getDashboardConfig } from "./dashboard-config";
+import { getClientDataMode, type DashboardDataStatus } from "./client-data-mode";
+import { getRealClientDashboard } from "./real-dashboard";
 import { resolveRequestedPeriod } from "./period";
 import { aggregate, dailyTotals, withinRange, type DailyTotal } from "./mock-helpers";
 import type { SeriesPair } from "./portfolio";
@@ -35,6 +37,10 @@ export type MetricFormat = "currency" | "number" | "percent" | "decimal";
 export interface DashboardMetric {
   comparison: Comparison;
   format: MetricFormat;
+  /** `false` quando a métrica não tem fonte REAL nesta fase (ex.: conversões,
+   *  ou reach/frequency sem agregado sincronizado / entre múltiplas contas). */
+  available: boolean;
+  unavailableReason?: string;
 }
 
 export interface DashboardCampaignRow {
@@ -61,6 +67,9 @@ export interface ClientDashboardParams {
 }
 
 export interface ClientDashboardData {
+  /** "real" = dados sincronizados da Meta; "demo" = mock (só dev). */
+  mode: "real" | "demo";
+  dataStatus: DashboardDataStatus;
   client: ClientRecord;
   config: DashboardConfigValue;
   resultMetric: ResultMetricConfig;
@@ -72,12 +81,24 @@ export interface ClientDashboardData {
   range: { start: string; end: string };
   previous: { start: string; end: string };
   metrics: Record<MetricKey, DashboardMetric>;
-  /** Séries diárias, keyed por métrica (spend/results/cost_per_result/...). */
+  /** Séries diárias, keyed por métrica (spend/impressions/clicks/...). */
   series: Record<string, SeriesPair>;
   campaignRows: DashboardCampaignRow[];
-  /** TEMPORÁRIO: toda a performance abaixo é mockada e NÃO vem deste cliente. */
-  performanceIsMock: true;
-  metaConnected: false;
+
+  /** Só no modo real: */
+  lastSyncAt?: string | null;
+  lastSyncStatus?: string | null;
+  linkedAccountCount?: number;
+  /** reach/frequency podem ser mostrados neste escopo? */
+  reachConsolidable?: boolean;
+  /** nota quando reach/frequency não podem ser consolidados (múltiplas contas). */
+  reachScopeNote?: string | null;
+  /** o agregado de período (reach/frequency) deste intervalo ainda não existe. */
+  periodicMissing?: boolean;
+  /** intervalo real do agregado de reach usado (pode diferir levemente da faixa diária). */
+  periodicInterval?: { from: string; to: string } | null;
+  /** chaves de métrica sem dado real nesta fase (para cards/colunas). */
+  unavailableMetricKeys?: MetricKey[];
 }
 
 const SERIES_VALUE: Record<string, (t: DailyTotal) => number> = {
@@ -97,13 +118,36 @@ const SERIES_VALUE: Record<string, (t: DailyTotal) => number> = {
  * Dashboard do cliente.
  * - Identidade e CONFIGURAÇÃO (cards/gráficos/colunas/métrica) são REAIS,
  *   lidas de `public.dashboard_configs` via RLS.
- * - Os VALORES de performance continuam mockados (`getDemoPerformance`), sem
- *   qualquer vínculo com o cliente real. Saem na integração com a Meta Ads.
+ * - PERFORMANCE:
+ *     modo `real`  -> dados sincronizados da Meta (`getRealClientDashboard`);
+ *     modo `demo`  -> mock (`getDemoPerformance`), SOMENTE em desenvolvimento
+ *                     sem Supabase. Nunca misturado com dados reais.
+ *   Cliente conectado mas sem sync, ou sem Meta: a página mostra o estado
+ *   correspondente (`awaiting_sync` / `no_meta`) e NÃO usa o mock.
  */
 export async function getClientDashboard(
   params: ClientDashboardParams,
 ): Promise<ClientDashboardData> {
   const { client, preset, compare = false } = params;
+
+  const dataMode = await getClientDataMode(client.id);
+  if (dataMode.dataStatus === "real") {
+    return getRealClientDashboard({
+      client,
+      dataMode,
+      preset: preset ?? "last_7d",
+      compare,
+      accountId: params.accountId,
+      campaignId: params.campaignId,
+    });
+  }
+  if (dataMode.mode === "real") {
+    // conectado sem sync (`awaiting_sync`) ou sem Meta (`no_meta`):
+    // devolve um esqueleto SEM números (a página renderiza o estado certo).
+    return emptyDashboard(client, dataMode.dataStatus, preset, compare);
+  }
+
+  // ---- modo demo (dev sem Supabase) ------------------------------------
   const accountId =
     params.accountId && params.accountId !== "" ? params.accountId : "all";
   const campaignId =
@@ -143,6 +187,7 @@ export async function getClientDashboard(
   ): DashboardMetric => ({
     comparison: compareMetric(current, previousValue, behavior),
     format,
+    available: true,
   });
 
   const metrics: Record<MetricKey, DashboardMetric> = {
@@ -206,6 +251,8 @@ export async function getClientDashboard(
   // ---------------------------------------------------------------------------
 
   return {
+    mode: "demo",
+    dataStatus: "demo",
     client,
     config,
     resultMetric,
@@ -219,7 +266,60 @@ export async function getClientDashboard(
     metrics,
     series,
     campaignRows,
-    performanceIsMock: true,
-    metaConnected: false,
+  };
+}
+
+/**
+ * Esqueleto sem números para clientes em modo real mas ainda sem dados
+ * (conectado sem sync, ou sem Meta). A página usa `dataStatus` para mostrar
+ * o estado correto — nunca cai no mock.
+ */
+async function emptyDashboard(
+  client: ClientRecord,
+  dataStatus: DashboardDataStatus,
+  preset: PeriodPreset | undefined,
+  compare: boolean,
+): Promise<ClientDashboardData> {
+  const config = await getDashboardConfig(client.id);
+  const zero = (format: MetricFormat): DashboardMetric => ({
+    comparison: compareMetric(0, 0, "neutral"),
+    format,
+    available: false,
+    unavailableReason:
+      dataStatus === "no_meta"
+        ? "Conecte a Meta Ads deste cliente."
+        : "Rode a primeira sincronização.",
+  });
+  const metrics = {
+    investment: zero("currency"),
+    results: zero("number"),
+    cost_per_result: zero("currency"),
+    reach: zero("number"),
+    impressions: zero("number"),
+    clicks: zero("number"),
+    ctr: zero("percent"),
+    cpc: zero("currency"),
+    cpm: zero("currency"),
+    frequency: zero("decimal"),
+  } as Record<MetricKey, DashboardMetric>;
+
+  return {
+    mode: "real",
+    dataStatus,
+    client,
+    config,
+    resultMetric: config.resultMetric,
+    accounts: [],
+    campaigns: [],
+    filters: { accountId: "all", campaignId: "all" },
+    preset: preset ?? "last_7d",
+    compare,
+    range: { start: "", end: "" },
+    previous: { start: "", end: "" },
+    metrics,
+    series: {},
+    campaignRows: [],
+    linkedAccountCount: 0,
+    unavailableMetricKeys: Object.keys(metrics) as MetricKey[],
   };
 }
