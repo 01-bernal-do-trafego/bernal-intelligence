@@ -19,17 +19,20 @@ import {
 } from "@/lib/dashboard-config";
 import { getClientRecord } from "@/server/clients";
 import { getMetaConnection } from "@/server/meta-connection";
+import { listMetaAdAccounts } from "@/server/meta-ad-accounts";
 import {
   getClientDashboard,
   type DashboardMetric,
   type MetricKey,
 } from "@/server/client-dashboard";
 import { describeCallbackReason } from "@/lib/meta/oauth-errors";
+import { metaIsUsable } from "@/lib/meta/connection-state";
 import {
   ClientStatusBadge,
   MetaConnectionBadge,
 } from "@/components/shared/status-badges";
 import { ConnectMetaButton } from "@/components/clients/connect-meta-button";
+import { ManageMetaConnection } from "@/components/clients/manage-meta-connection";
 import { EditClientButton } from "@/components/clients/edit-client-dialog";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { MetricCard, type MetricDelta } from "@/components/ui/metric-card";
@@ -98,6 +101,9 @@ export default async function ClientDashboardPage({
   if (!client) notFound();
 
   const metaConnection = await getMetaConnection(client.id);
+  const metaConnected = metaIsUsable(metaConnection.state);
+  const metaAdAccounts = metaConnected ? await listMetaAdAccounts(client.id) : [];
+  const linkedAdAccounts = metaAdAccounts.filter((a) => a.isLinked);
 
   const compare = sp.compare === "1";
   const dashboard = await getClientDashboard({
@@ -151,14 +157,42 @@ export default async function ClientDashboardPage({
               </h1>
               <ClientStatusBadge status={client.status} />
             </div>
-            <div className="mt-1 flex items-center gap-2 text-sm text-muted">
+            <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-muted">
               <span>Meta Ads</span>
               <span aria-hidden>·</span>
               <MetaConnectionBadge state={metaConnection.state} />
+              {metaConnected && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>
+                    {linkedAdAccounts.length === 0
+                      ? "nenhuma conta vinculada"
+                      : `${linkedAdAccounts.length} conta(s) vinculada(s)`}
+                  </span>
+                </>
+              )}
             </div>
+            {linkedAdAccounts.length > 0 && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {linkedAdAccounts.map((acc) => (
+                  <Badge key={acc.adAccountId} tone="neutral">
+                    {acc.name ?? acc.adAccountId}
+                    <span className="ml-1 font-mono text-[10px] text-muted">
+                      {acc.adAccountId}
+                    </span>
+                  </Badge>
+                ))}
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <ConnectMetaButton clientId={client.id} state={metaConnection.state} />
+            {metaConnected && (
+              <ManageMetaConnection
+                clientId={client.id}
+                initialAccounts={metaAdAccounts}
+              />
+            )}
             <EditClientButton client={client} />
             <DashboardHeaderActions clientId={client.id} config={config} />
           </div>

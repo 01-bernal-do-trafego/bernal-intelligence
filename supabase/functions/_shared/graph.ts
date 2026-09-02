@@ -103,3 +103,96 @@ export async function debugToken(
     isSystemUser: d.type === "SYSTEM_USER",
   };
 }
+
+// ---------------------------------------------------------------------------
+// Contas de anúncio (META 3) — GET /me/adaccounts, paginação por cursor
+// ---------------------------------------------------------------------------
+
+export type GraphErrorKind =
+  | "token_revoked"
+  | "insufficient_permission"
+  | "rate_limited"
+  | "transient"
+  | "unknown";
+
+export function classifyGraphError(body: unknown): GraphErrorKind {
+  if (typeof body !== "object" || body === null) return "unknown";
+  const err = (body as Record<string, unknown>).error;
+  if (typeof err !== "object" || err === null) return "unknown";
+  const e = err as Record<string, unknown>;
+  const code = typeof e.code === "number" ? e.code : null;
+  const sub = typeof e.error_subcode === "number" ? e.error_subcode : null;
+  if (code === 190) return "token_revoked";
+  if (code === 102 && sub === 463) return "token_revoked";
+  if (code != null && [10, 200, 294, 299, 272].includes(code)) {
+    return "insufficient_permission";
+  }
+  if (code != null && [4, 17, 32, 613, 80000].includes(code)) return "rate_limited";
+  if (code != null && [1, 2].includes(code)) return "transient";
+  return "unknown";
+}
+
+export class GraphApiError extends Error {
+  kind: GraphErrorKind;
+  constructor(kind: GraphErrorKind) {
+    super(`graph_error:${kind}`);
+    this.kind = kind;
+  }
+}
+
+const AD_ACCOUNT_FIELDS =
+  "account_id,name,account_status,currency,timezone_name,timezone_offset_hours_utc,business{id,name}";
+
+/**
+ * Lista TODAS as contas de anúncio disponíveis no token (`/me/adaccounts`),
+ * paginando pelo cursor `after`. Devolve as páginas cruas (`data[]`) — o
+ * parsing/normalização é feito no app (lib/meta/ad-account.ts).
+ *
+ * O token vai SEMPRE no header Authorization; nunca montamos uma URL com o
+ * token na query (não seguimos `paging.next`, que embute o token).
+ */
+export async function listAdAccounts(
+  input: GraphConfig & { token: string; pageLimit?: number; maxPages?: number },
+): Promise<unknown[][]> {
+  const endpoint = `${input.graphBase.replace(/\/+$/, "")}/${input.version}/me/adaccounts`;
+  const limit = String(input.pageLimit ?? 100);
+  const maxPages = input.maxPages ?? 25;
+
+  const pages: unknown[][] = [];
+  let after: string | null = null;
+  let guard = 0;
+
+  do {
+    guard += 1;
+    const url = new URL(endpoint);
+    url.searchParams.set("fields", AD_ACCOUNT_FIELDS);
+    url.searchParams.set("limit", limit);
+    if (after) url.searchParams.set("after", after);
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${input.token}` },
+    });
+    const body = (await res.json().catch(() => null)) as
+      | {
+          data?: unknown;
+          paging?: { next?: unknown; cursors?: { after?: unknown } };
+        }
+      | null;
+
+    if (!res.ok || !body) {
+      throw new GraphApiError(classifyGraphError(body));
+    }
+
+    pages.push(Array.isArray(body.data) ? body.data : []);
+
+    const hasNext = Boolean(body.paging && typeof body.paging.next === "string");
+    const nextAfter =
+      body.paging?.cursors && typeof body.paging.cursors.after === "string"
+        ? body.paging.cursors.after
+        : null;
+    after = hasNext ? nextAfter : null;
+  } while (after && guard < maxPages);
+
+  return pages;
+}
