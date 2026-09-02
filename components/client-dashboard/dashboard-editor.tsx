@@ -14,6 +14,7 @@ import {
   RESULT_METRIC_OPTIONS,
   TABLE_COLUMN_CATALOG,
   catalogLabel,
+  resultMetricTypeLabel,
   moveItem,
   toggleItem,
   type CatalogEntry,
@@ -131,6 +132,20 @@ export function DashboardEditor({
 
   const { resultMetric, layout } = config;
 
+  // Opções curadas + (se a config atual for legada e não estiver na lista) o
+  // valor atual prependado com rótulo amigável — nunca um id técnico visível.
+  const resultOptions = RESULT_METRIC_OPTIONS.some(
+    (o) => o.value === resultMetric.type,
+  )
+    ? RESULT_METRIC_OPTIONS
+    : [
+        {
+          value: resultMetric.type,
+          label: resultMetricTypeLabel(resultMetric.type),
+        },
+        ...RESULT_METRIC_OPTIONS,
+      ];
+
   function setResultMetric(patch: Partial<typeof resultMetric>) {
     setConfig((c) => ({ ...c, resultMetric: { ...c.resultMetric, ...patch } }));
   }
@@ -194,7 +209,7 @@ export function DashboardEditor({
             </label>
             <Select
               id="result-metric-select"
-              options={RESULT_METRIC_OPTIONS.map((o) => ({
+              options={resultOptions.map((o) => ({
                 value: o.value,
                 label: o.label,
               }))}

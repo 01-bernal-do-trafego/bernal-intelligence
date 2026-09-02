@@ -269,11 +269,13 @@ const DEFINITIONS: readonly MetricDefinition[] = [
   conversion("leads", "Leads"),
   conversion("purchases", "Compras", { dashboardSurfaces: CARD_CHART }),
   // Mensageria: 3 métricas DISTINTAS (não aliases) — cada uma = 1 action_type.
+  // LIBERADAS no dashboard real (validadas com dados reais).
   conversion("messaging_conversations_started", "Conversas iniciadas", { dashboardSurfaces: CARD_CHART }),
-  conversion("messaging_contacts_total", "Total de contatos", { dashboardSurfaces: HIDDEN }),
-  conversion("messaging_contacts_new", "Novos contatos", { dashboardSurfaces: HIDDEN }),
+  conversion("messaging_contacts_total", "Total de contatos", { dashboardSurfaces: CARD_CHART }),
+  conversion("messaging_contacts_new", "Novos contatos", { dashboardSurfaces: CARD_CHART }),
   // `conversations` (legado / compat) = ponteiro para "conversas iniciadas".
-  formula("conversations", "Conversas", "number", "higher_is_better", { op: "identity", of: "messaging_conversations_started" }, { aggregation: "sum", dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true }),
+  // HIDDEN: não é opção visual do editor (o id novo a substitui).
+  formula("conversations", "Conversas iniciadas", "number", "higher_is_better", { op: "identity", of: "messaging_conversations_started" }, { aggregation: "sum", dashboardSurfaces: HIDDEN, availability: "depends_on_account", requiresEvent: true }),
   conversion("registrations", "Cadastros"),
   conversion("appointments", "Agendamentos"),
   conversion("add_to_cart", "Adições ao carrinho"),

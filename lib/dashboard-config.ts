@@ -19,9 +19,10 @@ import type { ResultMetricConfig, ResultMetricType } from "@/types/domain";
 /* ================================================================== */
 
 /**
- * Tipos de "Resultado principal" na ORDEM de exibição no editor. O valor é o
- * id estável salvo em `dashboard_configs.result_metric.type`; o editor mostra
- * SEMPRE o rótulo amigável (`RESULT_METRIC_TYPE_LABEL`), nunca o id.
+ * Tipos de "Resultado principal" ACEITOS (validação/persistência). Inclui os
+ * legados `conversations` e `custom` para não rejeitar configs antigas na
+ * leitura — `conversations` é migrado para `messaging_conversations_started`
+ * em `normalizeResultMetric` (mesma canônica, mesmo comportamento).
  */
 export const RESULT_METRIC_TYPES: readonly ResultMetricType[] = [
   "messaging_conversations_started",
@@ -44,7 +45,8 @@ export const RESULT_METRIC_TYPE_LABEL: Record<ResultMetricType, string> = {
   purchases: "Compras",
   registrations: "Cadastros",
   appointments: "Agendamentos",
-  conversations: "Conversas",
+  // legado: representa exatamente "Conversas iniciadas".
+  conversations: "Conversas iniciadas",
   results: "Resultados",
   custom: "Personalizado",
 };
@@ -58,16 +60,27 @@ export function resultMetricTypeLabel(type: string): string {
 }
 
 /**
- * Opções do select "Resultado principal" no editor — `{ value, label }` já na
- * ordem de exibição. `value` é o que persiste; `label` é o que o usuário vê.
- * Cobre TODOS os tipos para que o valor atual do cliente sempre apareça.
+ * Opções VISÍVEIS do select "Resultado principal" no editor — `{ value, label }`
+ * na ordem de exibição. `value` persiste; `label` é o que o usuário vê. Lista
+ * CURADA: sem `conversations` (migrado → `messaging_conversations_started`,
+ * sem duplicata visual) e sem `custom`. O editor prepende o valor atual do
+ * cliente se ele não estiver aqui (config legada), sempre com rótulo amigável.
  */
 export const RESULT_METRIC_OPTIONS: readonly {
   value: ResultMetricType;
   label: string;
-}[] = RESULT_METRIC_TYPES.map((value) => ({
-  value,
-  label: RESULT_METRIC_TYPE_LABEL[value],
+}[] = [
+  "messaging_conversations_started",
+  "messaging_contacts_total",
+  "messaging_contacts_new",
+  "leads",
+  "purchases",
+  "registrations",
+  "appointments",
+  "results",
+].map((value) => ({
+  value: value as ResultMetricType,
+  label: RESULT_METRIC_TYPE_LABEL[value as ResultMetricType],
 }));
 
 export const METRIC_BEHAVIORS: readonly MetricBehavior[] = [
@@ -120,17 +133,17 @@ export const CHART_METRIC_CATALOG: readonly ChartMetricEntry[] = [
   { key: "cpc", label: "CPC", context: "time_series", format: "currency", behavior: "lower_is_better", seriesKey: "cpc" },
   { key: "cpm", label: "CPM", context: "time_series", format: "currency", behavior: "neutral", seriesKey: "cpm" },
   { key: "frequency", label: "Frequência", context: "time_series", format: "decimal", behavior: "neutral", seriesKey: "frequency" },
-  // Dependentes da futura integração Meta Ads (sem fonte por enquanto):
+  // Mensageria — LIBERADAS (validadas com dados reais no Atacado do Chinelo).
+  // Fonte: meta_insights_daily (série) / meta_insights_periodic (totais).
+  { key: "messaging_conversations_started", label: "Conversas iniciadas", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "messaging_conversations_started" },
+  { key: "cost_per_conversation", label: "Custo por conversa iniciada", context: "time_series", format: "currency", behavior: "lower_is_better", seriesKey: "cost_per_conversation" },
+  { key: "messaging_contacts_total", label: "Total de contatos", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "messaging_contacts_total" },
+  { key: "messaging_contacts_new", label: "Novos contatos", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "messaging_contacts_new" },
+  // Ainda NÃO liberadas — validar em contas adequadas antes:
   { key: "purchases", label: "Compras", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
   { key: "cpa", label: "CPA", context: "time_series", format: "currency", behavior: "lower_is_better", requiresMeta: true },
   { key: "revenue", label: "Receita", context: "time_series", format: "currency", behavior: "higher_is_better", requiresMeta: true },
   { key: "roas", label: "ROAS", context: "time_series", format: "decimal", behavior: "higher_is_better", requiresMeta: true },
-  { key: "conversations", label: "Conversas", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
-  { key: "messaging_conversations_started", label: "Conversas iniciadas", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
-  // `messaging_contacts_total` / `messaging_contacts_new` NÃO entram como
-  // card/gráfico avulso — são selecionáveis só como "resultado principal"
-  // (result_metric) e aparecem na validação /meta-data. Registry: HIDDEN.
-  { key: "cost_per_conversation", label: "Custo por conversa", context: "time_series", format: "currency", behavior: "lower_is_better", requiresMeta: true },
 ];
 
 const CHART_METRIC_BY_KEY = new Map(CHART_METRIC_CATALOG.map((m) => [m.key, m]));
@@ -243,14 +256,16 @@ export const CARD_CATALOG: readonly CatalogEntry[] = [
   { key: "cpc", label: "CPC" },
   { key: "cpm", label: "CPM" },
   { key: "frequency", label: "Frequência" },
+  // Mensageria — LIBERADAS (validadas com dados reais):
+  { key: "messaging_conversations_started", label: "Conversas iniciadas" },
+  { key: "cost_per_conversation", label: "Custo por conversa iniciada" },
+  { key: "messaging_contacts_total", label: "Total de contatos" },
+  { key: "messaging_contacts_new", label: "Novos contatos" },
+  // Ainda NÃO liberadas:
   { key: "purchases", label: "Compras", requiresMeta: true },
   { key: "cpa", label: "CPA", requiresMeta: true },
   { key: "revenue", label: "Receita", requiresMeta: true },
   { key: "roas", label: "ROAS", requiresMeta: true },
-  { key: "conversations", label: "Conversas", requiresMeta: true },
-  { key: "messaging_conversations_started", label: "Conversas iniciadas", requiresMeta: true },
-  // total/novos contatos: só via result_metric (Registry HIDDEN), não card avulso.
-  { key: "cost_per_conversation", label: "Custo por conversa", requiresMeta: true },
 ];
 
 export const TABLE_COLUMN_CATALOG: readonly CatalogEntry[] = [
@@ -259,6 +274,10 @@ export const TABLE_COLUMN_CATALOG: readonly CatalogEntry[] = [
   { key: "investment", label: "Investimento" },
   { key: "results", label: "Resultados" },
   { key: "cost_per_result", label: "Custo por resultado" },
+  { key: "messaging_conversations_started", label: "Conversas iniciadas" },
+  { key: "cost_per_conversation", label: "Custo por conversa iniciada" },
+  { key: "messaging_contacts_total", label: "Total de contatos" },
+  { key: "messaging_contacts_new", label: "Novos contatos" },
   { key: "reach", label: "Alcance" },
   { key: "impressions", label: "Impressões" },
   { key: "clicks", label: "Cliques" },
@@ -373,20 +392,29 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 function normalizeResultMetric(raw: unknown): ResultMetricConfig {
   const rec = asRecord(raw);
   const typeRaw = rec?.type;
-  const type: ResultMetricType = RESULT_METRIC_TYPE_SET.has(String(typeRaw))
+  let type: ResultMetricType = RESULT_METRIC_TYPE_SET.has(String(typeRaw))
     ? (typeRaw as ResultMetricType)
     : "results";
+  // Legado: `conversations` == "Conversas iniciadas" (mesma canônica). Migra
+  // na leitura para não haver duplicata no editor; o próximo save já persiste
+  // o id novo e adota os rótulos do preset novo.
+  const migratedFromLegacyConversations = type === "conversations";
+  if (migratedFromLegacyConversations) type = "messaging_conversations_started";
   const preset = RESULT_METRIC_PRESETS[type];
 
   const labelRaw = rec?.resultLabel;
   const resultLabel =
-    typeof labelRaw === "string" && labelRaw.trim().length > 0
+    !migratedFromLegacyConversations &&
+    typeof labelRaw === "string" &&
+    labelRaw.trim().length > 0
       ? labelRaw.trim().slice(0, 60)
       : preset.resultLabel;
 
   const costRaw = rec?.costLabel;
   const costLabel =
-    typeof costRaw === "string" && costRaw.trim().length > 0
+    !migratedFromLegacyConversations &&
+    typeof costRaw === "string" &&
+    costRaw.trim().length > 0
       ? costRaw.trim().slice(0, 60)
       : preset.costLabel;
 
@@ -788,6 +816,10 @@ export const CARD_METRIC_KEY: Record<string, string> = {
   cpc: "cpc",
   cpm: "cpm",
   frequency: "frequency",
+  messaging_conversations_started: "messaging_conversations_started",
+  cost_per_conversation: "cost_per_conversation",
+  messaging_contacts_total: "messaging_contacts_total",
+  messaging_contacts_new: "messaging_contacts_new",
 };
 
 export function cardLabel(key: string, metric: ResultMetricConfig): string {

@@ -31,7 +31,14 @@ export type MetricKey =
   | "ctr"
   | "cpc"
   | "cpm"
-  | "frequency";
+  | "frequency"
+  // Mensageria liberada (validada com dados reais). O conjunto canônico das
+  // 6 métricas de conversão liberadas vive em `lib/meta/dashboard-conversions`
+  // (`RELEASED_CONVERSION_METRICS`).
+  | "messaging_conversations_started"
+  | "cost_per_conversation"
+  | "messaging_contacts_total"
+  | "messaging_contacts_new";
 
 export type MetricFormat = "currency" | "number" | "percent" | "decimal";
 
@@ -49,14 +56,19 @@ export interface DashboardCampaignRow {
   name: string;
   status: CampaignStatus;
   spend: number;
-  results: number;
-  costPerResult: number;
   reach: number;
   impressions: number;
   clicks: number;
   ctr: number;
   cpc: number;
   cpm: number;
+  /**
+   * Métricas de conversão por campanha (id -> valor). `null` = campanha sem
+   * esse evento no período (mostra "—"); `0` = evento medido com zero.
+   * Chaves: results, cost_per_result, messaging_conversations_started,
+   * cost_per_conversation, messaging_contacts_total, messaging_contacts_new.
+   */
+  conversions: Record<string, number | null>;
 }
 
 export interface ClientDashboardParams {
@@ -119,6 +131,12 @@ const SERIES_VALUE: Record<string, (t: DailyTotal) => number> = {
   cpc: (t) => safeDivide(t.spend, t.clicks),
   cpm: (t) => safeDivide(t.spend, t.impressions) * 1000,
   frequency: (t) => safeDivide(t.impressions, t.reach),
+  // demo (dev sem Supabase): reaproveita `results` do mock para a série de
+  // conversas iniciadas; contatos não têm mock -> ficam em 0.
+  messaging_conversations_started: (t) => t.results,
+  cost_per_conversation: (t) => safeDivide(t.spend, t.results),
+  messaging_contacts_total: () => 0,
+  messaging_contacts_new: () => 0,
 };
 
 /**
@@ -197,6 +215,12 @@ export async function getClientDashboard(
     available: true,
   });
 
+  const demoUnavailable = (format: MetricFormat): DashboardMetric => ({
+    comparison: compareMetric(0, 0, "neutral"),
+    format,
+    available: false,
+    unavailableReason: "Sem dados demonstrativos para esta métrica.",
+  });
   const metrics: Record<MetricKey, DashboardMetric> = {
     investment: metric(cur.spend, prev.spend, "neutral", "currency"),
     results: metric(cur.results, prev.results, resultMetric.behavior, "number"),
@@ -213,6 +237,16 @@ export async function getClientDashboard(
     cpc: metric(cur.cpc, prev.cpc, "lower_is_better", "currency"),
     cpm: metric(cur.cpm, prev.cpm, "neutral", "currency"),
     frequency: metric(curFreq, prevFreq, "neutral", "decimal"),
+    // demo: conversas iniciadas reaproveita o mock de `results`; contatos não.
+    messaging_conversations_started: metric(
+      cur.results,
+      prev.results,
+      "higher_is_better",
+      "number",
+    ),
+    cost_per_conversation: metric(cur.cpr, prev.cpr, "lower_is_better", "currency"),
+    messaging_contacts_total: demoUnavailable("number"),
+    messaging_contacts_new: demoUnavailable("number"),
   };
 
   const currentTotals = dailyTotals(currentRows, eachDay(range));
@@ -244,14 +278,20 @@ export async function getClientDashboard(
         name: campaign.name,
         status: campaign.status,
         spend: agg.spend,
-        results: agg.results,
-        costPerResult: agg.cpr,
         reach: agg.reach,
         impressions: agg.impressions,
         clicks: agg.clicks,
         ctr: agg.ctr,
         cpc: agg.cpc,
         cpm: agg.cpm,
+        conversions: {
+          results: agg.results,
+          cost_per_result: agg.cpr,
+          messaging_conversations_started: agg.results,
+          cost_per_conversation: agg.cpr,
+          messaging_contacts_total: null,
+          messaging_contacts_new: null,
+        },
       };
     })
     .sort((a, b) => b.spend - a.spend);
@@ -308,6 +348,10 @@ async function emptyDashboard(
     cpc: zero("currency"),
     cpm: zero("currency"),
     frequency: zero("decimal"),
+    messaging_conversations_started: zero("number"),
+    cost_per_conversation: zero("currency"),
+    messaging_contacts_total: zero("number"),
+    messaging_contacts_new: zero("number"),
   } as Record<MetricKey, DashboardMetric>;
 
   return {

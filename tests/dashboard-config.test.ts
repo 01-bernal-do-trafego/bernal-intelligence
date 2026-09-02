@@ -163,19 +163,25 @@ describe("migração v1 -> v2", () => {
 /* ================= métricas e visualizações válidas ================= */
 
 describe("catálogos de métrica e visualização", () => {
-  it("métricas sem fonte ficam marcadas requiresMeta", () => {
-    const future = [
-      "purchases",
-      "cpa",
-      "revenue",
-      "roas",
-      "conversations",
-      "cost_per_conversation",
-      "messaging_conversations_started",
-    ];
+  it("métricas ainda NÃO liberadas ficam marcadas requiresMeta", () => {
+    // Leads/CPL/Compras/CPA/Receita/ROAS seguem bloqueadas até validar.
+    const future = ["purchases", "cpa", "revenue", "roas"];
     for (const key of future) {
       expect(CHART_METRIC_CATALOG.find((m) => m.key === key)?.requiresMeta).toBe(true);
     }
+    // Mensageria liberada não está mais em requiresMeta:
+    for (const key of [
+      "messaging_conversations_started",
+      "cost_per_conversation",
+      "messaging_contacts_total",
+      "messaging_contacts_new",
+      "results",
+      "cost_per_result",
+    ]) {
+      expect(CHART_METRIC_CATALOG.find((m) => m.key === key)?.requiresMeta).toBeFalsy();
+    }
+    // `conversations` genérico sumiu da seleção visual de gráficos:
+    expect(CHART_METRIC_CATALOG.find((m) => m.key === "conversations")).toBeUndefined();
     expect(AVAILABLE_CHART_METRICS.every((m) => !m.requiresMeta)).toBe(true);
   });
 
@@ -511,9 +517,15 @@ describe("Resultado principal — select amigável do editor", () => {
     }
   });
 
-  it("cobre TODOS os tipos — o valor atual do cliente sempre aparece no select", () => {
-    expect(RESULT_METRIC_OPTIONS.map((o) => o.value).sort()).toEqual(
-      [...RESULT_METRIC_TYPES].sort(),
+  it("lista CURADA: subconjunto válido, sem `conversations` (dup) nem `custom`", () => {
+    const valid = new Set(RESULT_METRIC_TYPES);
+    const values = RESULT_METRIC_OPTIONS.map((o) => o.value);
+    for (const v of values) expect(valid.has(v)).toBe(true);
+    expect(values).not.toContain("conversations");
+    expect(values).not.toContain("custom");
+    // o legado `conversations` é migrado, então nunca chega a precisar de opção
+    expect(parseDashboardConfig({ result_metric: { type: "conversations" } }).resultMetric.type).toBe(
+      "messaging_conversations_started",
     );
   });
 
@@ -601,18 +613,25 @@ describe("labels amigáveis (IDs internos nunca viram rótulo)", () => {
     );
     expect(resultMetricTypeLabel("messaging_contacts_total")).toBe("Total de contatos");
     expect(resultMetricTypeLabel("messaging_contacts_new")).toBe("Novos contatos");
-    expect(resultMetricTypeLabel("conversations")).toBe("Conversas");
+    // legado: representa exatamente "Conversas iniciadas" (sem dup visual)
+    expect(resultMetricTypeLabel("conversations")).toBe("Conversas iniciadas");
     expect(resultMetricTypeLabel("results")).toBe("Resultados");
     // desconhecido -> rótulo genérico, jamais o id
     expect(resultMetricTypeLabel("algo_interno")).toBe("Resultados");
   });
 
   it("catálogos de card/gráfico/coluna têm rótulos amigáveis para métricas de conversão", () => {
-    expect(catalogLabel(CARD_CATALOG, "conversations")).toBe("Conversas");
-    expect(catalogLabel(CARD_CATALOG, "cost_per_conversation")).toBe("Custo por conversa");
+    expect(catalogLabel(CARD_CATALOG, "messaging_conversations_started")).toBe("Conversas iniciadas");
+    expect(catalogLabel(CARD_CATALOG, "cost_per_conversation")).toBe("Custo por conversa iniciada");
+    expect(catalogLabel(CARD_CATALOG, "messaging_contacts_total")).toBe("Total de contatos");
+    expect(catalogLabel(CARD_CATALOG, "messaging_contacts_new")).toBe("Novos contatos");
     expect(catalogLabel(CARD_CATALOG, "results")).toBe("Resultados");
     expect(catalogLabel(CARD_CATALOG, "cost_per_result")).toBe("Custo por resultado");
     expect(chartMetricLabel("messaging_conversations_started")).toBe("Conversas iniciadas");
+    expect(catalogLabel(TABLE_COLUMN_CATALOG, "cost_per_conversation")).toBe("Custo por conversa iniciada");
+    // `conversations` genérico não é chave visual de nenhum catálogo:
+    expect(CARD_CATALOG.some((c) => c.key === "conversations")).toBe(false);
+    expect(CHART_METRIC_CATALOG.some((c) => c.key === "conversations")).toBe(false);
   });
 
   it("nenhum rótulo de catálogo contém `_` ou é igual à sua key", () => {
@@ -635,64 +654,104 @@ describe("labels amigáveis (IDs internos nunca viram rótulo)", () => {
   });
 });
 
-/* ====== conversões: configuráveis como resultado, bloqueadas como card ====== */
+/* ====== liberação de mensageria no dashboard real (cards/gráficos/colunas) ====== */
 
-describe("result_metric ≠ liberação da métrica como card/gráfico", () => {
-  it("as métricas de conversão seguem requiresMeta (bloqueadas no dashboard principal)", () => {
-    for (const key of [
-      "conversations",
-      "cost_per_conversation",
-      "messaging_conversations_started",
-      "purchases",
-      "revenue",
-      "roas",
-    ]) {
+const RELEASED = [
+  "results",
+  "cost_per_result",
+  "messaging_conversations_started",
+  "cost_per_conversation",
+  "messaging_contacts_total",
+  "messaging_contacts_new",
+] as const;
+const STILL_BLOCKED = ["purchases", "cpa", "revenue", "roas"] as const;
+
+describe("mensageria liberada; Leads/Compras/Receita/ROAS ainda não", () => {
+  it("as 6 métricas liberadas são selecionáveis como card (sem requiresMeta)", () => {
+    for (const key of RELEASED) {
+      const card = CARD_CATALOG.find((c) => c.key === key);
+      expect(card, `card ${key}`).toBeDefined();
+      expect(card?.requiresMeta, `card ${key}`).toBeFalsy();
+    }
+  });
+
+  it("as 6 métricas liberadas são selecionáveis como gráfico (com seriesKey)", () => {
+    for (const key of RELEASED) {
+      const chart = CHART_METRIC_CATALOG.find((c) => c.key === key);
+      expect(chart, `chart ${key}`).toBeDefined();
+      expect(chart?.requiresMeta, `chart ${key}`).toBeFalsy();
+      expect(chart?.seriesKey, `seriesKey ${key}`).toBeTruthy();
+    }
+  });
+
+  it("as 6 métricas liberadas são colunas configuráveis da tabela", () => {
+    for (const key of RELEASED) {
+      expect(TABLE_COLUMN_CATALOG.some((c) => c.key === key), key).toBe(true);
+    }
+  });
+
+  it("Leads/CPL/Compras/CPA/Receita/ROAS seguem bloqueadas (requiresMeta)", () => {
+    for (const key of STILL_BLOCKED) {
       const card = CARD_CATALOG.find((c) => c.key === key);
       if (card) expect(card.requiresMeta, `card ${key}`).toBe(true);
       const chart = CHART_METRIC_CATALOG.find((c) => c.key === key);
       if (chart) expect(chart.requiresMeta, `chart ${key}`).toBe(true);
     }
+    // leads/cpl nem aparecem nos catálogos visuais desta fase
+    expect(CARD_CATALOG.some((c) => c.key === "leads")).toBe(false);
+    expect(CHART_METRIC_CATALOG.some((c) => c.key === "cpl")).toBe(false);
   });
 
-  it("mas messaging_* É selecionável como Resultado principal", () => {
-    const values = new Set(RESULT_METRIC_OPTIONS.map((o) => o.value));
-    expect(values.has("messaging_conversations_started")).toBe(true);
-    expect(values.has("messaging_contacts_total")).toBe(true);
-    expect(values.has("messaging_contacts_new")).toBe(true);
-  });
-
-  it("ativar um card de conversão continua sendo rejeitado", () => {
+  it("ativar um card de mensageria liberada é ACEITO no save", () => {
     const input = baseConfig();
     input.layout.cards = [
-      ...input.layout.cards.filter((c) => c.key !== "messaging_conversations_started"),
+      ...input.layout.cards.filter(
+        (c) => c.key !== "messaging_conversations_started",
+      ),
       { key: "messaging_conversations_started", enabled: true },
+      { key: "cost_per_conversation", enabled: true },
+      { key: "messaging_contacts_total", enabled: true },
+      { key: "messaging_contacts_new", enabled: true },
     ];
-    expect(sanitizeDashboardConfigInput(input)).toMatchObject({ ok: false });
+    expect(sanitizeDashboardConfigInput(input).ok).toBe(true);
   });
 
-  it("adicionar um gráfico de conversão continua sendo rejeitado", () => {
+  it("adicionar gráfico temporal de conversas iniciadas é ACEITO", () => {
     const input = baseConfig();
     input.layout.charts = [
       {
         id: "c_conv",
-        metric: "conversations",
+        metric: "messaging_conversations_started",
         visualization: "area",
-        title: "Conversas",
+        title: "Conversas iniciadas ao longo do tempo",
         enabled: true,
       },
+    ];
+    expect(sanitizeDashboardConfigInput(input).ok).toBe(true);
+  });
+
+  it("ativar um card de Compras (ainda bloqueada) continua sendo rejeitado", () => {
+    const input = baseConfig();
+    input.layout.cards = [
+      ...input.layout.cards.filter((c) => c.key !== "purchases"),
+      { key: "purchases", enabled: true },
     ];
     expect(sanitizeDashboardConfigInput(input)).toMatchObject({ ok: false });
   });
 
-  it("selecionar messaging_conversations_started como resultado é aceito no save", () => {
+  it("adicionar gráfico de ROAS (ainda bloqueada) continua sendo rejeitado", () => {
     const input = baseConfig();
-    input.resultMetric = {
-      type: "messaging_conversations_started",
-      resultLabel: "Conversas iniciadas",
-      costLabel: "Custo por conversa iniciada",
-      behavior: "higher_is_better",
-    };
-    expect(sanitizeDashboardConfigInput(input).ok).toBe(true);
+    input.layout.charts = [
+      { id: "c_roas", metric: "roas", visualization: "area", title: "ROAS", enabled: true },
+    ];
+    expect(sanitizeDashboardConfigInput(input)).toMatchObject({ ok: false });
+  });
+
+  it("messaging_* continua selecionável como Resultado principal", () => {
+    const values = new Set(RESULT_METRIC_OPTIONS.map((o) => o.value));
+    expect(values.has("messaging_conversations_started")).toBe(true);
+    expect(values.has("messaging_contacts_total")).toBe(true);
+    expect(values.has("messaging_contacts_new")).toBe(true);
   });
 });
 

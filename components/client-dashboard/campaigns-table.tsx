@@ -9,16 +9,21 @@ import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
 import type { DashboardCampaignRow } from "@/server/client-dashboard";
 import type { CampaignStatus, ResultMetricConfig } from "@/types/domain";
 
-type SortKey =
-  | "spend"
-  | "results"
-  | "costPerResult"
-  | "reach"
-  | "impressions"
-  | "clicks"
-  | "ctr"
-  | "cpc"
-  | "cpm";
+/** Colunas de conversão (valor vem de `row.conversions`, null-aware). */
+const CONVERSION_COLUMN_KEYS = [
+  "results",
+  "cost_per_result",
+  "messaging_conversations_started",
+  "cost_per_conversation",
+  "messaging_contacts_total",
+  "messaging_contacts_new",
+] as const;
+const CONVERSION_CURRENCY = new Set<string>([
+  "cost_per_result",
+  "cost_per_conversation",
+]);
+
+type SortKey = string;
 type SortDir = "asc" | "desc";
 type StatusFilter = "all" | CampaignStatus;
 
@@ -44,8 +49,41 @@ function currencyOrDash(value: number, hasBase: boolean) {
   );
 }
 
+/** Conversão da campanha: `null` (sem evento) -> "—"; `0` medido -> "0". */
+function conversionCell(value: number | null | undefined, currency: boolean) {
+  if (value == null) return <span className="text-muted">—</span>;
+  return (
+    <span className="tabular-nums">
+      {currency ? formatCurrency(value) : formatNumber(value)}
+    </span>
+  );
+}
+
+const CONVERSION_HEADER: Record<string, string> = {
+  messaging_conversations_started: "Conversas iniciadas",
+  cost_per_conversation: "Custo por conversa iniciada",
+  messaging_contacts_total: "Total de contatos",
+  messaging_contacts_new: "Novos contatos",
+};
+
 function columnDefs(metric: ResultMetricConfig): Record<string, ColumnDef> {
+  const conv: Record<string, ColumnDef> = {};
+  for (const key of CONVERSION_COLUMN_KEYS) {
+    const currency = CONVERSION_CURRENCY.has(key);
+    conv[key] = {
+      header:
+        key === "results"
+          ? metric.resultLabel
+          : key === "cost_per_result"
+            ? metric.costLabel
+            : CONVERSION_HEADER[key],
+      align: "right",
+      sortKey: key,
+      render: (r) => conversionCell(r.conversions?.[key], currency),
+    };
+  }
   return {
+    ...conv,
     campaign: {
       header: "Campanha",
       render: (r) => <span className="font-medium text-foreground">{r.name}</span>,
@@ -59,18 +97,6 @@ function columnDefs(metric: ResultMetricConfig): Record<string, ColumnDef> {
       align: "right",
       sortKey: "spend",
       render: (r) => <span className="tabular-nums">{formatCurrency(r.spend)}</span>,
-    },
-    results: {
-      header: metric.resultLabel,
-      align: "right",
-      sortKey: "results",
-      render: (r) => <span className="tabular-nums">{formatNumber(r.results)}</span>,
-    },
-    cost_per_result: {
-      header: metric.costLabel,
-      align: "right",
-      sortKey: "costPerResult",
-      render: (r) => currencyOrDash(r.costPerResult, r.results > 0),
     },
     reach: {
       header: "Alcance",
@@ -188,7 +214,15 @@ export function CampaignsTable({
     if (!sort.key) return filtered;
     const key = sort.key;
     const factor = sort.dir === "asc" ? 1 : -1;
-    return [...filtered].sort((a, b) => (a[key] - b[key]) * factor);
+    // colunas de conversão: valor vem de `conversions`; `null` ordena por baixo.
+    const valueOf = (r: DashboardCampaignRow): number => {
+      if (CONVERSION_COLUMN_KEYS.includes(key as never)) {
+        return r.conversions?.[key] ?? Number.NEGATIVE_INFINITY;
+      }
+      const base = (r as unknown as Record<string, unknown>)[key];
+      return typeof base === "number" ? base : 0;
+    };
+    return [...filtered].sort((a, b) => (valueOf(a) - valueOf(b)) * factor);
   }, [rows, status, sort]);
 
   const tableColumns: readonly Column<DashboardCampaignRow>[] = activeKeys.map(

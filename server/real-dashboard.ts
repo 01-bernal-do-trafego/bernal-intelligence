@@ -25,6 +25,14 @@ import {
   sumDailyAdditive,
   type DailyInsightLike,
 } from "@/lib/meta/real-metrics";
+import { conversionTotalsFromRow } from "@/lib/meta/conversion-events";
+import {
+  CONVERSION_METRIC_META,
+  RELEASED_CONVERSION_METRICS,
+  conversionMetricValue,
+  sumRawMaps,
+  type ReleasedConversionMetric,
+} from "@/lib/meta/dashboard-conversions";
 import { createSupabaseServerClient } from "@/supabase/server";
 import type { ClientRecord } from "@/types/client";
 import type {
@@ -32,6 +40,7 @@ import type {
   Campaign,
   CampaignObjective,
   CampaignStatus,
+  ResultMetricType,
 } from "@/types/domain";
 import type { ClientDataMode } from "./client-data-mode";
 import { getDashboardConfig } from "./dashboard-config";
@@ -88,8 +97,10 @@ const REAL_SPECS: MetricSpec[] = [
   { key: "cpc", format: "currency", behavior: "lower_is_better" },
   { key: "cpm", format: "currency", behavior: "neutral" },
 ];
-const CONVERSION_KEYS: MetricKey[] = ["results", "cost_per_result"];
-const CONVERSION_REASON = "Métrica de conversão — validação em fase própria.";
+const CONVERSION_NO_SOURCE_REASON =
+  "Sem esse evento no período para esta conta.";
+const CONVERSION_NO_RESULT_METRIC_REASON =
+  "Defina o Resultado principal deste cliente no editor.";
 
 function metricEntry(
   current: number | null,
@@ -169,7 +180,7 @@ export async function getRealClientDashboard(
   let dailyQuery = supabase
     .from("meta_insights_daily")
     .select(
-      "date, entity_id, ad_account_id, spend, impressions, clicks, inline_link_clicks, reach, frequency",
+      "date, entity_id, ad_account_id, spend, impressions, clicks, inline_link_clicks, reach, frequency, actions, action_values, raw_actions, raw_action_values",
     )
     .eq("client_id", client.id)
     .eq("level", level)
@@ -241,6 +252,46 @@ export async function getRealClientDashboard(
   const additiveCur = sumDailyAdditive([...curByDay.values()]);
   const additivePrev = sumDailyAdditive([...prevByDay.values()]);
 
+  // ---- conversões por dia (eventos crus, somados entre contas do dia) -----
+  const resultType = config.resultMetric.type as ResultMetricType;
+  interface DayConv {
+    spend: number | null;
+    raw_actions: Record<string, number>;
+    raw_action_values: Record<string, number>;
+  }
+  function convByDay(dateFrom: string, dateTo: string): Map<string, DayConv> {
+    const m = new Map<string, DayConv>();
+    for (const r of dailyRows) {
+      const d = String(r.date);
+      if (!inRange(d, dateFrom, dateTo)) continue;
+      const cur = m.get(d) ?? {
+        spend: null,
+        raw_actions: {},
+        raw_action_values: {},
+      };
+      const sp = num(r.spend);
+      if (sp != null) cur.spend = (cur.spend ?? 0) + sp;
+      cur.raw_actions = sumRawMaps([cur.raw_actions, r.raw_actions]);
+      cur.raw_action_values = sumRawMaps([
+        cur.raw_action_values,
+        r.raw_action_values,
+      ]);
+      m.set(d, cur);
+    }
+    return m;
+  }
+  const curConvByDay = convByDay(range.start, range.end);
+  const prevConvByDay = convByDay(previous.start, previous.end);
+  /** MetricTotals de conversão de um dia — re-resolvido dos eventos crus. */
+  const dayConvTotals = (m: Map<string, DayConv>, d: string) => {
+    const c = m.get(d);
+    return conversionTotalsFromRow({
+      spend: c?.spend ?? null,
+      raw_actions: c?.raw_actions ?? {},
+      raw_action_values: c?.raw_action_values ?? {},
+    });
+  };
+
   // ---- reach/frequency do período (só agregado da Meta) -----------------
   const consolidable = reachIsConsolidable({
     scope,
@@ -267,13 +318,16 @@ export async function getRealClientDashboard(
         date_to: string;
       }
     | null = null;
+  // linha periódica CRUA (jsonb de conversões) — fonte autoritativa dos
+  // totais de conversão do período quando existe.
+  let periodicConvRaw: Record<string, unknown> | null = null;
   // Só usa o agregado quando o escopo é consolidável (1 conta / conta / campanha).
   // Multi-conta "todas": totais das aditivas vêm da soma do diário entre contas.
   if (consolidable && reachEntity) {
     const { data: perData } = await supabase
       .from("meta_insights_periodic")
       .select(
-        "spend, impressions, clicks, inline_link_clicks, reach, frequency, date_from, date_to",
+        "spend, impressions, clicks, inline_link_clicks, reach, frequency, date_from, date_to, actions, action_values, raw_actions, raw_action_values",
       )
       .eq("client_id", client.id)
       .eq("level", level)
@@ -295,6 +349,7 @@ export async function getRealClientDashboard(
         date_from: String(p.date_from),
         date_to: String(p.date_to),
       };
+      periodicConvRaw = p;
     }
   }
   // reach/frequency indisponíveis se: não consolidável (multi-conta) OU sem
@@ -324,6 +379,35 @@ export async function getRealClientDashboard(
     !totalsFromAggregate && selectedCoverage.status !== "complete";
   const INCOMPLETE_NOTE = `Período incompleto no histórico diário — ${selectedCoverage.missingDates.length} dia(s) sem dados. Rode “Sincronizar Meta”.`;
 
+  // ---- totais de CONVERSÃO do período ---------------------------------
+  // Preferimos o agregado periódico do intervalo (autoritativo); sem ele,
+  // somamos os eventos crus do diário no intervalo (com sinal de cobertura).
+  // As métricas canônicas são SEMPRE re-resolvidas de raw_actions/raw_action_values
+  // (`conversionTotalsFromRow`), então refletem o mapeamento ATUAL sem re-sync.
+  const curConvTotals = periodicConvRaw
+    ? conversionTotalsFromRow({
+        ...periodicConvRaw,
+        spend: curTotals.spend,
+      })
+    : conversionTotalsFromRow({
+        spend: curTotals.spend,
+        raw_actions: sumRawMaps(
+          [...curConvByDay.values()].map((c) => c.raw_actions),
+        ),
+        raw_action_values: sumRawMaps(
+          [...curConvByDay.values()].map((c) => c.raw_action_values),
+        ),
+      });
+  const prevConvTotals = conversionTotalsFromRow({
+    spend: prevTotals.spend,
+    raw_actions: sumRawMaps(
+      [...prevConvByDay.values()].map((c) => c.raw_actions),
+    ),
+    raw_action_values: sumRawMaps(
+      [...prevConvByDay.values()].map((c) => c.raw_action_values),
+    ),
+  });
+
   // ---- métricas ---------------------------------------------------------
   const metrics = {} as Record<MetricKey, DashboardMetric>;
   for (const spec of REAL_SPECS) {
@@ -350,13 +434,40 @@ export async function getRealClientDashboard(
     }
     metrics[spec.key] = entry;
   }
-  for (const key of CONVERSION_KEYS) {
-    metrics[key] = {
-      comparison: compareMetric(0, 0, "neutral"),
-      format: key === "cost_per_result" ? "currency" : "number",
-      available: false,
-      unavailableReason: CONVERSION_REASON,
+  // ---- métricas de CONVERSÃO liberadas (mensageria + results/cpr) --------
+  const resultMetricHasCanonical =
+    resultType !== "results" && resultType !== "custom";
+  const conversionUnavailable: MetricKey[] = [];
+  for (const id of RELEASED_CONVERSION_METRICS) {
+    const meta = CONVERSION_METRIC_META[id];
+    const behavior = meta.followsResultMetricBehavior
+      ? config.resultMetric.behavior
+      : meta.behavior;
+    const cur = conversionMetricValue(id, curConvTotals, resultType);
+    const prev = conversionMetricValue(id, prevConvTotals, resultType);
+    let entry: DashboardMetric = {
+      comparison: compareMetric(
+        cur ?? 0,
+        compare ? (prev ?? 0) : (cur ?? 0),
+        behavior,
+      ),
+      format: meta.format,
+      available: cur !== null,
     };
+    if (cur === null) {
+      entry = {
+        ...entry,
+        unavailableReason:
+          (id === "results" || id === "cost_per_result") &&
+          !resultMetricHasCanonical
+            ? CONVERSION_NO_RESULT_METRIC_REASON
+            : CONVERSION_NO_SOURCE_REASON,
+      };
+      conversionUnavailable.push(id as MetricKey);
+    } else if (additiveIncomplete) {
+      entry = { ...entry, unavailableReason: INCOMPLETE_NOTE };
+    }
+    metrics[id as MetricKey] = entry;
   }
 
   // ---- séries diárias -------------------------------------------------
@@ -391,11 +502,38 @@ export async function getRealClientDashboard(
   }
   series.investment = series.spend;
 
+  // séries diárias de CONVERSÃO — cada ponto sobre os TOTAIS daquele dia:
+  //   Resultados diário   = métrica configurada como resultado, naquele dia
+  //   Custo/resultado dia  = spend do dia / resultado do dia
+  //   Custo/conversa dia   = spend do dia / conversas iniciadas do dia
+  // (o card do PERÍODO continua spend total / resultado total, acima.)
+  const convDayValue = (
+    m: Map<string, DayConv>,
+    d: string,
+    id: ReleasedConversionMetric,
+  ): number => conversionMetricValue(id, dayConvTotals(m, d), resultType) ?? 0;
+  for (const id of RELEASED_CONVERSION_METRICS) {
+    series[id] = {
+      current: days.map((d) => ({
+        date: d,
+        value: convDayValue(curConvByDay, d, id),
+      })),
+      previous: compare
+        ? prevDays.map((d) => ({
+            date: d,
+            value: convDayValue(prevConvByDay, d, id),
+          }))
+        : null,
+    };
+  }
+
   // ---- tabela de campanhas (agregado de período por campanha) --------
   const [{ data: perCampData }, { data: campDailyData }] = await Promise.all([
     supabase
       .from("meta_insights_periodic")
-      .select("entity_id, date_to, spend, impressions, clicks, reach")
+      .select(
+        "entity_id, date_to, spend, impressions, clicks, reach, actions, action_values, raw_actions, raw_action_values",
+      )
       .eq("client_id", client.id)
       .eq("level", "campaign")
       .eq("period_key", preset)
@@ -403,7 +541,7 @@ export async function getRealClientDashboard(
       .order("date_to", { ascending: false }),
     supabase
       .from("meta_insights_daily")
-      .select("entity_id, spend, impressions, clicks")
+      .select("entity_id, spend, impressions, clicks, raw_actions, raw_action_values")
       .eq("client_id", client.id)
       .eq("level", "campaign")
       .in("attribution_window", ATTR_VALUES)
@@ -415,15 +553,36 @@ export async function getRealClientDashboard(
     const id = String(r.entity_id);
     if (!latestPerCamp.has(id)) latestPerCamp.set(id, r);
   }
-  // fallback aditivo (spend/impr/clicks) somando o diário por campanha no
-  // intervalo — usado quando o agregado periódico do preset ainda não existe.
-  const dailyPerCamp = new Map<string, { spend: number; impressions: number; clicks: number }>();
+  // fallback aditivo somando o diário por campanha no intervalo — usado quando
+  // o agregado periódico do preset ainda não existe. Inclui os eventos crus
+  // para as colunas de conversão.
+  interface CampDaily {
+    spend: number;
+    impressions: number;
+    clicks: number;
+    raw_actions: Record<string, number>;
+    raw_action_values: Record<string, number>;
+  }
+  const dailyPerCamp = new Map<string, CampDaily>();
   for (const r of (campDailyData ?? []) as Record<string, unknown>[]) {
     const id = String(r.entity_id);
-    const cur = dailyPerCamp.get(id) ?? { spend: 0, impressions: 0, clicks: 0 };
+    const cur =
+      dailyPerCamp.get(id) ??
+      ({
+        spend: 0,
+        impressions: 0,
+        clicks: 0,
+        raw_actions: {},
+        raw_action_values: {},
+      } as CampDaily);
     cur.spend += num(r.spend) ?? 0;
     cur.impressions += num(r.impressions) ?? 0;
     cur.clicks += num(r.clicks) ?? 0;
+    cur.raw_actions = sumRawMaps([cur.raw_actions, r.raw_actions]);
+    cur.raw_action_values = sumRawMaps([
+      cur.raw_action_values,
+      r.raw_action_values,
+    ]);
     dailyPerCamp.set(id, cur);
   }
   const campaignRows: DashboardCampaignRow[] = campaigns
@@ -439,19 +598,32 @@ export async function getRealClientDashboard(
         },
         p ? { reach: num(p.reach), frequency: null } : null,
       );
+      const spend = t.spend ?? 0;
+      // totais de conversão da campanha: periódico do preset, senão soma do
+      // diário; canônicas re-resolvidas de raw_actions (reflete mapeamento atual).
+      const convT = p
+        ? conversionTotalsFromRow({ ...p, spend })
+        : conversionTotalsFromRow({
+            spend,
+            raw_actions: fb?.raw_actions ?? {},
+            raw_action_values: fb?.raw_action_values ?? {},
+          });
+      const conversions: Record<string, number | null> = {};
+      for (const id of RELEASED_CONVERSION_METRICS) {
+        conversions[id] = conversionMetricValue(id, convT, resultType);
+      }
       return {
         id: c.id,
         name: c.name,
         status: c.status,
-        spend: t.spend ?? 0,
-        results: 0,
-        costPerResult: 0,
+        spend,
         reach: t.reach ?? 0,
         impressions: t.impressions ?? 0,
         clicks: t.clicks ?? 0,
         ctr: realMetricValue("ctr", t) ?? 0,
         cpc: realMetricValue("cpc", t) ?? 0,
         cpm: realMetricValue("cpm", t) ?? 0,
+        conversions,
       };
     })
     .sort((a, b) => b.spend - a.spend);
@@ -489,7 +661,8 @@ export async function getRealClientDashboard(
     series,
     campaignRows,
     unavailableMetricKeys: [
-      ...CONVERSION_KEYS,
+      // só as conversões SEM fonte real neste período/escopo:
+      ...conversionUnavailable,
       ...(consolidable && !periodicMissing ? [] : (["reach", "frequency"] as MetricKey[])),
     ],
     coverageByPreset: coverageAll,
