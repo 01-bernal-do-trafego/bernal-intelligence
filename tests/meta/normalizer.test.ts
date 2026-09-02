@@ -133,28 +133,16 @@ describe("normalizeInsightRow", () => {
     expect(row.rawActions.video_view).toBe(0);
   });
 
-  it("clientResultMetricType define a fonte de `results` (por prioridade)", () => {
-    const asLeads = normalizeInsightRow(rawAd, {
+  it("NÃO persiste `results` — é config-driven, resolvido em leitura", () => {
+    const row = normalizeInsightRow(rawAd, {
       level: "ad",
       adAccountId: "act_1234567890",
       attributionWindow: "7d_click_1d_view",
-      clientResultMetricType: "leads",
     })!;
-    expect(asLeads.actions.results).toBe(48); // = leads (prioridade `lead`)
-
-    const asPurchases = normalizeInsightRow(rawAd, {
-      level: "ad",
-      adAccountId: "act_1234567890",
-      attributionWindow: "7d_click_1d_view",
-      clientResultMetricType: "purchases",
-    })!;
-    expect(asPurchases.actions.results).toBe(9); // = purchases
-
-    const noConfig = normalizeInsightRow(rawAd, {
-      level: "ad",
-      adAccountId: "act_1234567890",
-    })!;
-    expect(noConfig.actions.results).toBeUndefined(); // ausência, não zero
+    // só métricas canônicas
+    expect("results" in row.actions).toBe(false);
+    expect(row.actions.leads).toBe(48);
+    expect(row.actions.purchases).toBe(9);
   });
 
   it("colunas ausentes viram null; nunca NaN/Infinity", () => {
@@ -210,15 +198,16 @@ describe("normalizeInsightRow", () => {
 });
 
 describe("insightRowToTotals", () => {
-  it("converte para o shape que o registry consome", () => {
+  it("converte para o shape que o registry consome (só canônicas)", () => {
     const row = normalizeInsightRow(rawAd, {
       level: "ad",
       adAccountId: "act_1234567890",
-      clientResultMetricType: "leads",
     })!;
     const totals = insightRowToTotals(row);
     expect(totals.spend).toBe(1000.5);
-    expect(totals.actions.results).toBe(row.actions.results);
+    expect(totals.actions.leads).toBe(row.actions.leads);
+    expect(totals.actions.purchases).toBe(row.actions.purchases);
+    expect("results" in totals.actions).toBe(false);
     expect(totals.actionValues.revenue).toBe(row.actionValues.revenue);
   });
 });

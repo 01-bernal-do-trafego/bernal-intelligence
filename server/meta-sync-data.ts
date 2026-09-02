@@ -11,6 +11,10 @@ import {
   type ConversionMetricRow,
   type EventRow,
 } from "@/lib/meta/conversion-events";
+import {
+  resolveCostPerResult,
+  resolveResults,
+} from "@/lib/meta/result-metric-resolve";
 import { RESULT_METRIC_PRESETS } from "@/lib/result-metric";
 import {
   META_ATTRIBUTION_LEGACY_WINDOW,
@@ -270,7 +274,13 @@ export const getMetaValidationOverview = cache(
           const meta = campMeta.get(String(r.entity_id));
           const conversions: Record<string, number | null> = {};
           for (const id of CONV_ORDER) {
-            const v = computeMetric(id, convT);
+            // results / cost_per_result: resolvidos em leitura pela config.
+            const v =
+              id === "results"
+                ? resolveResults(convT, resultType)
+                : id === "cost_per_result"
+                  ? resolveCostPerResult(convT, resultType)
+                  : computeMetric(id, convT);
             conversions[id] = v;
             if (v !== null) relevant.add(id);
           }
@@ -306,7 +316,11 @@ export const getMetaValidationOverview = cache(
         : [];
 
       const rmPreset = RESULT_METRIC_PRESETS[resultType];
-      const resultValue = convTotals ? computeMetric("results", convTotals) : null;
+      // "Resultados" resolvido EM LEITURA — mudar result_metric no editor muda
+      // o número na hora, sem novo sync.
+      const resultValue = convTotals
+        ? resolveResults(convTotals, resultType)
+        : null;
       const resultMetric: MetaResultMetricInfo | null = accTot
         ? {
             type: resultType,
@@ -314,7 +328,7 @@ export const getMetaValidationOverview = cache(
             costLabel: rmPreset?.costLabel ?? "Custo por resultado",
             value: resultValue,
             costPerResult: convTotals
-              ? computeMetric("cost_per_result", convTotals)
+              ? resolveCostPerResult(convTotals, resultType)
               : null,
             source: resultMetricSource(resultType, accTot?.raw_actions),
             available: resultValue !== null,

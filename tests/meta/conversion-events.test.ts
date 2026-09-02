@@ -73,7 +73,8 @@ describe("describeEvents — nunca descarta, marca mapeado/revisão", () => {
 
 describe("conversionTotalsFromRow + computeMetric — dupla contagem", () => {
   it("actions já resolvido: purchases = 7 (não 21) mesmo com 3 aliases nos crus", () => {
-    // a Edge Function já resolveu por prioridade -> actions.purchases = 7
+    // a Edge Function já resolveu por prioridade -> actions.purchases = 7.
+    // `results` NÃO é gravado pelo sync (é config-driven).
     const t = conversionTotalsFromRow(
       periodicRow({
         spend: 700,
@@ -84,6 +85,7 @@ describe("conversionTotalsFromRow + computeMetric — dupla contagem", () => {
     expect(computeMetric("purchases", t)).toBe(7);
     expect(computeMetric("leads", t)).toBe(40);
     expect(computeMetric("revenue", t)).toBe(1400);
+    expect("results" in t.actions).toBe(false);
   });
 
   it("CPA = spend/purchases sobre totais brutos", () => {
@@ -108,9 +110,10 @@ describe("conversionTotalsFromRow + computeMetric — dupla contagem", () => {
     expect(computeMetric("roas", t)).toBeCloseTo(4, 6);
   });
 
-  it("cost_per_result = spend/results", () => {
-    const t = conversionTotalsFromRow(periodicRow({ spend: 500, actions: { results: 25 } }));
-    expect(computeMetric("cost_per_result", t)).toBeCloseTo(20, 6);
+  it("cost_per_result = spend / resultado (resolvido em leitura pela config)", () => {
+    // sem `results` persistido; a config diz `leads` -> 25 leads
+    const t = conversionTotalsFromRow(periodicRow({ spend: 500, actions: { leads: 25 } }));
+    expect(computeMetric("cost_per_result", t)).toBeNull(); // sem resolver -> null
   });
 
   it("conversão ausente => métrica null (≠ zero)", () => {
@@ -131,7 +134,7 @@ describe("buildConversionRows — Métrica · Valor · Fonte", () => {
   const t = conversionTotalsFromRow(
     periodicRow({
       spend: 700,
-      actions: { purchases: 7, leads: 40, conversations: 12, results: 7 },
+      actions: { purchases: 7, leads: 40, conversations: 12 },
       action_values: { revenue: 2800 },
     }),
   );

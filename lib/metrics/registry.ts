@@ -97,6 +97,13 @@ export interface MetricDefinition {
   isDerived: boolean;
   /** `results`: segue o comportamento configurado da métrica principal do cliente. */
   followsClientResultMetric?: boolean;
+  /**
+   * `true` = o VALOR depende de `dashboard_configs.result_metric` e é resolvido
+   * EM LEITURA (ver `lib/meta/result-metric-resolve.ts`). NÃO é persistido pela
+   * sincronização — `results`/`cost_per_result`. Mudar a config muda o número
+   * na hora, sem novo sync.
+   */
+  configDriven?: boolean;
   /** Superfícies onde é exposta HOJE no editor (mantém a UI atual estável). */
   dashboardSurfaces: readonly DashboardSurface[];
 }
@@ -237,13 +244,14 @@ const DEFINITIONS: readonly MetricDefinition[] = [
   column("video_thruplays", "ThruPlays", "Reproduções completas ou de pelo menos 15 segundos.", "number", "higher_is_better", { levels: AD_DOWN_LEVELS, availability: "depends_on_account" }),
   column("video_avg_time_watched", "Tempo médio assistido", "Segundos médios de vídeo assistidos.", "decimal", "higher_is_better", { aggregation: "weighted_avg", periodSource: "periodic_only", levels: AD_DOWN_LEVELS, availability: "depends_on_account" }),
 
-  // ---- meta_native: conversões (actions[]) ----
+  // ---- config-driven: "Resultados" resolvido em leitura (não persistido) ----
   {
     id: "results",
     label: "Resultados",
     description:
-      "Conversão principal configurada para o cliente (lead, compra, conversa...).",
-    category: "meta_native",
+      "Conversão principal configurada para o cliente (lead, compra, conversa...). " +
+      "Resolvido em leitura a partir de dashboard_configs.result_metric — não é persistido pelo sync.",
+    category: "calculated",
     source: { kind: "action", actionType: "__client_result__" },
     format: "number",
     behavior: "higher_is_better",
@@ -253,7 +261,8 @@ const DEFINITIONS: readonly MetricDefinition[] = [
     visualizations: TS_VIS,
     availability: "depends_on_account",
     requiresEvent: true,
-    isDerived: false,
+    isDerived: true,
+    configDriven: true,
     followsClientResultMetric: true,
     dashboardSurfaces: CARD_CHART,
   },
@@ -295,7 +304,7 @@ const DEFINITIONS: readonly MetricDefinition[] = [
   formula("cpc_link", "CPC (link)", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "inline_link_clicks" }),
   formula("cpm", "CPM", "currency", "neutral", { op: "ratio", numerator: "spend", denominator: "impressions", multiplier: 1000 }, { dashboardSurfaces: CARD_CHART }),
   formula("frequency", "Frequência", "decimal", "neutral", { op: "ratio", numerator: "impressions", denominator: "reach" }, { periodSource: "periodic_only", dashboardSurfaces: CARD_CHART }),
-  formula("cost_per_result", "Custo por resultado", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "results" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true }),
+  formula("cost_per_result", "Custo por resultado", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "results" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true, configDriven: true }),
   formula("cpl", "Custo por lead", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "leads" }, { availability: "depends_on_account", requiresEvent: true }),
   formula("cpa", "CPA", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "purchases" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true }),
   formula("roas", "ROAS", "decimal", "higher_is_better", { op: "ratio", numerator: "revenue", denominator: "spend" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true }),
@@ -376,3 +385,30 @@ export function requiresPeriodicAggregate(id: string): boolean {
 export function isMetricAdditive(id: string): boolean {
   return getMetricDefinition(id)?.aggregation === "sum";
 }
+
+/**
+ * Métricas cujo valor depende de `dashboard_configs.result_metric` e é
+ * resolvido EM LEITURA (não persistido pelo sync). Ver
+ * `lib/meta/result-metric-resolve.ts`.
+ */
+export const CONFIG_DRIVEN_METRIC_IDS: readonly string[] = DEFINITIONS.filter(
+  (d) => d.configDriven,
+).map((d) => d.id);
+
+export function isConfigDrivenMetric(id: string): boolean {
+  return getMetricDefinition(id)?.configDriven === true;
+}
+
+/** Métricas de conversão CANÔNICAS da Meta (persistidas pelo sync). */
+export const CANONICAL_CONVERSION_METRIC_IDS: readonly string[] = [
+  "leads",
+  "conversations",
+  "purchases",
+  "registrations",
+  "appointments",
+  "add_to_cart",
+  "initiate_checkout",
+  "landing_page_views",
+  "link_clicks",
+  "revenue",
+];

@@ -17,6 +17,7 @@ import {
   valueActionTypesForMetric,
 } from "./action-type-map";
 import { RESULT_METRIC_ACTION_TYPES } from "./action-type-map";
+import { withResolvedResults } from "./result-metric-resolve";
 import { computeMetric, type MetricTotals } from "@/lib/metrics/compute";
 import { getMetricDefinition, type MetricFormat } from "@/lib/metrics/registry";
 import type { ResultMetricType } from "@/types/domain";
@@ -148,10 +149,12 @@ export function buildConversionRows(args: {
 }): ConversionMetricRow[] {
   const rawCounts = asNumberMap(args.rawActions);
   const rawValues = asNumberMap(args.rawActionValues);
+  // `results`/`cost_per_result` são resolvidos EM LEITURA a partir da config.
+  const totals = withResolvedResults(args.totals, args.resultType);
 
   return CONVERSION_METRIC_IDS.map((id) => {
     const def = getMetricDefinition(id);
-    const value = computeMetric(id, args.totals);
+    const value = computeMetric(id, totals);
     let source: string | null = null;
 
     if (id === "results") {

@@ -1,9 +1,14 @@
 /**
- * Resolução de conversões (Edge Function / Deno) — CONVERSÕES REAIS V1.
+ * Resolução de conversões CANÔNICAS (Edge Function / Deno) — CONVERSÕES REAIS V1.
  *
  * Espelho de `lib/meta/action-type-map.ts` + a fatia de conversões de
  * `lib/meta/normalizer.ts` do app (a versão do app é a TESTADA; mantenha as
  * duas idênticas se um `action_type` da Meta mudar).
+ *
+ * SÓ MÉTRICAS CANÔNICAS DA META: leads, conversations, purchases, revenue, etc.
+ * `results` NÃO é gravado aqui — é uma métrica CONFIG-DRIVEN (depende de
+ * `dashboard_configs.result_metric`) e é resolvida EM LEITURA. A sincronização
+ * não conhece a configuração do dashboard.
  *
  * ANTI DUPLA CONTAGEM: cada métrica declara uma lista de `action_type` EM
  * ORDEM DE PRIORIDADE. `resolveActionMetric` usa o valor do PRIMEIRO presente
@@ -33,16 +38,6 @@ export const ACTION_METRIC_SPECS: Spec[] = [
 export const ACTION_VALUE_METRIC_SPECS: Spec[] = [
   { metricId: "revenue", actionTypes: ["omni_purchase", "purchase", "offsite_conversion.fct.purchase"], combine: "priority" },
 ];
-
-export const RESULT_METRIC_ACTION_TYPES: Record<string, string[]> = {
-  leads: ["lead", "offsite_conversion.fct.lead", "onsite_conversion.lead_grouped"],
-  purchases: ["omni_purchase", "purchase", "offsite_conversion.fct.purchase"],
-  conversations: ["onsite_conversion.messaging_conversation_started_7d", "onsite_conversion.total_messaging_connection"],
-  registrations: ["complete_registration", "offsite_conversion.fct.complete_registration"],
-  appointments: ["schedule", "onsite_conversion.schedule_total"],
-  results: [],
-  custom: [],
-};
 
 const CLAIMED = new Set<string>(ACTION_METRIC_SPECS.flatMap((s) => s.actionTypes));
 
@@ -85,14 +80,12 @@ export interface NormalizedActions {
 }
 
 /**
- * Resolve `actions`/`action_values` de UMA linha de insights.
- * `resultMetricType` (de dashboard_configs.result_metric) define a fonte de
- * `results` — se o evento configurado não veio, `results` NÃO é gravado.
+ * Resolve as métricas CANÔNICAS de `actions`/`action_values` de UMA linha de
+ * insights. NÃO grava `results` (config-driven, resolvido em leitura).
  */
 export function normalizeActions(
   rawActionsArr: unknown,
   rawActionValuesArr: unknown,
-  resultMetricType?: string | null,
 ): NormalizedActions {
   const rawActions = collectRaw(rawActionsArr);
   const rawActionValues = collectRaw(rawActionValuesArr);
@@ -107,11 +100,6 @@ export function normalizeActions(
   for (const spec of ACTION_VALUE_METRIC_SPECS) {
     const v = resolve(spec.actionTypes, rawActionValues, spec.combine);
     if (v !== null) action_values[spec.metricId] = v;
-  }
-
-  if (resultMetricType && RESULT_METRIC_ACTION_TYPES[resultMetricType]) {
-    const v = resolve(RESULT_METRIC_ACTION_TYPES[resultMetricType], rawActions, "priority");
-    if (v !== null) actions.results = v;
   }
 
   return { actions, action_values, raw_actions: rawActions, raw_action_values: rawActionValues };

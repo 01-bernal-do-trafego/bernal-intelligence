@@ -87,14 +87,12 @@ interface Ctx {
   level: InsightLevel;
   attributionWindow: string;
   currency: string | null;
-  /** tipo de result_metric do cliente (define a fonte de `actions.results`). */
-  resultMetricType?: string | null;
 }
 
 function baseRow(raw: Record<string, unknown>, ctx: Ctx): DbInsightRow | null {
   const eid = entityId(raw, ctx.level, ctx.adAccountId);
   if (!eid) return null;
-  const conv = normalizeActions(raw.actions, raw.action_values, ctx.resultMetricType);
+  const conv = normalizeActions(raw.actions, raw.action_values);
   return {
     client_id: ctx.clientId,
     ad_account_ref: ctx.adAccountRef,

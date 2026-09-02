@@ -1,10 +1,8 @@
-import type { ResultMetricType } from "@/types/domain";
 import { META_DEFAULT_ATTRIBUTION_WINDOW } from "./config";
 import {
   ACTION_METRIC_SPECS,
   ACTION_VALUE_METRIC_SPECS,
   resolveActionMetric,
-  resolveResultMetric,
 } from "./action-type-map";
 import { metaTimeToISODate, parseMetaInt, parseMetaNumber } from "./parse";
 import type {
@@ -25,6 +23,11 @@ import type {
  * `action-type-map.ts`) — nunca somando aliases sobrepostos. Assim o total do
  * Bernal bate com o Ads Manager dentro das regras de atribuição configuradas.
  *
+ * SÓ MÉTRICAS CANÔNICAS. `results` NÃO é produzido aqui — é config-driven
+ * (`dashboard_configs.result_metric`) e resolvido EM LEITURA, ver
+ * `lib/meta/result-metric-resolve.ts`. O normalizer/sincronização não conhece
+ * a configuração do dashboard.
+ *
  * `Meta response → Normalizer → Metric Registry → Dashboard`.
  */
 
@@ -33,8 +36,6 @@ export interface NormalizeOptions {
   adAccountId: string; // "act_123..."
   attributionWindow?: string;
   currency?: string | null;
-  /** Tipo de resultado configurado do cliente — define a fonte de `results`. */
-  clientResultMetricType?: ResultMetricType;
 }
 
 function pickWindowValue(
@@ -124,13 +125,7 @@ export function normalizeInsightRow(
     if (value !== null) actionValues[spec.metricId] = value;
   }
 
-  // 3. Resultado principal do cliente (também por prioridade).
-  if (opts.clientResultMetricType) {
-    const result = resolveResultMetric(opts.clientResultMetricType, rawActions);
-    if (result !== null) actions.results = result;
-  }
-
-  // 4. Auditoria: `action_type`s crus (não-zero) que nenhum spec reivindica.
+  // 3. Auditoria: `action_type`s crus (não-zero) que nenhum spec reivindica.
   const unmappedActions = [...rawActions.entries()]
     .filter(([actionType, value]) => value !== 0 && !CLAIMED_ACTION_TYPES.has(actionType))
     .map(([actionType, value]) => ({ actionType, value }));
