@@ -52,6 +52,19 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   const back = (path: string) =>
     clearStateCookie(NextResponse.redirect(new URL(path, origin)));
 
+  try {
+    return await handleCallback(request, sp, back);
+  } catch {
+    // Qualquer falha inesperada: nunca deixa o cookie de state para trás.
+    return back(`/clients?meta=error&reason=exchange`);
+  }
+}
+
+async function handleCallback(
+  request: NextRequest,
+  sp: URLSearchParams,
+  back: (path: string) => NextResponse,
+): Promise<NextResponse> {
   const cookieRaw = request.cookies.get(META_OAUTH_STATE_COOKIE)?.value ?? null;
   const state = validateState({
     cookieRaw,

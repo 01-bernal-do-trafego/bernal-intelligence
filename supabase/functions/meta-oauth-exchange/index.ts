@@ -9,24 +9,33 @@
  * server, com `Authorization: Bearer <access_token do usuário Supabase>` e
  * body `{ code, clientId }`. Nunca é chamada pelo browser.
  *
- * Passos:
- *   1. Valida o JWT do chamador (auth.getUser).
+ * Ordem (privilégio mínimo no tempo):
+ *   1. Valida o JWT do chamador (auth.getUser) com a chave PUBLISHABLE.
  *   2. Autoriza: papel de agência + acesso ao cliente (leituras via RLS com o
  *      JWT do usuário — profiles/clients).
+ *   -- só depois disso os SEGREDOS da Meta e a chave SECRETA são lidos --
  *   3. Troca `code` -> access token (server-to-server, com client_secret).
  *   4. GET /debug_token para metadados (scopes, expiração, tipo, business).
- *   5. Cifra o token (AES-256-GCM).
+ *   5. Cifra o token (AES-256-GCM, IV novo por token).
  *   6. Grava tudo numa transação via RPC `meta_oauth_upsert_connection`
- *      (service_role). NENHUM token na resposta.
+ *      (client administrativo). NENHUM token/segredo na resposta.
  *
- * Secrets necessários (supabase secrets set):
+ * Chaves do Supabase: NÃO cadastradas manualmente. Legadas
+ * (SUPABASE_ANON_KEY / SUPABASE_SERVICE_ROLE_KEY) auto-injetadas, com fallback
+ * para o formato 2026 (SUPABASE_PUBLISHABLE_KEYS / SUPABASE_SECRET_KEYS) —
+ * ver ../_shared/supabase.ts.
+ *
+ * Secrets que o usuário cadastra (supabase secrets set):
  *   META_APP_ID, META_APP_SECRET, META_OAUTH_REDIRECT_URI, META_TOKEN_ENC_KEY
- *   (META_GRAPH_VERSION e META_GRAPH_BASE são opcionais)
- * Auto-injetados: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY
+ *   (META_GRAPH_VERSION / META_GRAPH_BASE opcionais)
+ *
+ * NÃO há logging nesta função: authorization code, access token e App Secret
+ * nunca são impressos nem devolvidos na resposta.
  */
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, requireEnv } from "../_shared/http.ts";
+import { resolvePublishableKey, resolveSecretKey } from "../_shared/supabase.ts";
 import { sealToken } from "../_shared/crypto.ts";
 import { debugToken, exchangeCodeForToken } from "../_shared/graph.ts";
 
@@ -50,29 +59,20 @@ Deno.serve(async (req: Request) => {
     return json({ error: "unauthorized" }, 401);
   }
 
+  // --- infra mínima para identificar o chamador -------------------------------
   let SUPABASE_URL: string;
-  let ANON_KEY: string;
-  let SERVICE_KEY: string;
-  let APP_ID: string;
-  let APP_SECRET: string;
-  let REDIRECT_URI: string;
-  let ENC_KEY: string;
+  let PUBLISHABLE_KEY: string;
   try {
     SUPABASE_URL = requireEnv("SUPABASE_URL");
-    ANON_KEY = requireEnv("SUPABASE_ANON_KEY");
-    SERVICE_KEY = requireEnv("SUPABASE_SERVICE_ROLE_KEY");
-    APP_ID = requireEnv("META_APP_ID");
-    APP_SECRET = requireEnv("META_APP_SECRET");
-    REDIRECT_URI = requireEnv("META_OAUTH_REDIRECT_URI");
-    ENC_KEY = requireEnv("META_TOKEN_ENC_KEY");
+    PUBLISHABLE_KEY = resolvePublishableKey();
   } catch (err) {
     return json({ error: "misconfigured", detail: String(err) }, 500);
   }
 
-  // 1. Identidade do chamador
-  const userClient = createClient(SUPABASE_URL, ANON_KEY, {
+  // 1. Identidade do chamador (antes de qualquer operação privilegiada)
+  const userClient = createClient(SUPABASE_URL, PUBLISHABLE_KEY, {
     global: { headers: { Authorization: authHeader } },
-    auth: { persistSession: false },
+    auth: { persistSession: false, autoRefreshToken: false },
   });
   const {
     data: { user },
@@ -105,7 +105,23 @@ Deno.serve(async (req: Request) => {
     .maybeSingle();
   if (!client) return json({ error: "forbidden" }, 403);
 
-  // 3. Troca do code
+  // --- a partir daqui: segredos da Meta + chave administrativa ---------------
+  let APP_ID: string;
+  let APP_SECRET: string;
+  let REDIRECT_URI: string;
+  let ENC_KEY: string;
+  let SECRET_KEY: string;
+  try {
+    APP_ID = requireEnv("META_APP_ID");
+    APP_SECRET = requireEnv("META_APP_SECRET");
+    REDIRECT_URI = requireEnv("META_OAUTH_REDIRECT_URI");
+    ENC_KEY = requireEnv("META_TOKEN_ENC_KEY");
+    SECRET_KEY = resolveSecretKey();
+  } catch (err) {
+    return json({ error: "misconfigured", detail: String(err) }, 500);
+  }
+
+  // 3. Troca do code (sem detalhe do erro na resposta)
   let token;
   try {
     token = await exchangeCodeForToken({
@@ -116,8 +132,8 @@ Deno.serve(async (req: Request) => {
       redirectUri: REDIRECT_URI,
       code,
     });
-  } catch (err) {
-    return json({ error: "exchange_failed", detail: String(err) }, 502);
+  } catch {
+    return json({ error: "exchange_failed" }, 502);
   }
 
   // 4. Metadados
@@ -141,7 +157,7 @@ Deno.serve(async (req: Request) => {
     : "user";
 
   // status inicial: system user sem expiração => active; com expiração próxima
-  // (< 7 dias) => expiring; senão active. A vigilância fina fica para META 6.
+  // (< 7 dias) => expiring. A vigilância fina fica para META 6.
   let status: ConnStatus = "active";
   if (expiresAt) {
     const msLeft = new Date(expiresAt).getTime() - Date.now();
@@ -149,17 +165,17 @@ Deno.serve(async (req: Request) => {
     else if (msLeft < 7 * 24 * 60 * 60 * 1000) status = "expiring";
   }
 
-  // 5. Cifra
+  // 5. Cifra (falha aqui => nada é persistido)
   let sealed;
   try {
     sealed = await sealToken(token.accessToken, ENC_KEY);
-  } catch (err) {
-    return json({ error: "encrypt_failed", detail: String(err) }, 500);
+  } catch {
+    return json({ error: "encrypt_failed" }, 500);
   }
 
-  // 6. Persistência atômica (service_role)
-  const admin = createClient(SUPABASE_URL, SERVICE_KEY, {
-    auth: { persistSession: false },
+  // 6. Persistência atômica (client administrativo)
+  const admin = createClient(SUPABASE_URL, SECRET_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
   });
   const { data: connectionId, error: rpcErr } = await admin.rpc(
     "meta_oauth_upsert_connection",
@@ -180,9 +196,10 @@ Deno.serve(async (req: Request) => {
     },
   );
   if (rpcErr) {
-    return json({ error: "persist_failed", detail: rpcErr.message }, 500);
+    return json({ error: "persist_failed" }, 500);
   }
 
+  // Resposta: só metadados não sensíveis. NUNCA token/cipher/iv/tag.
   return json({
     status: "connected",
     connectionId,

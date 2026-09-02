@@ -16,7 +16,10 @@ export interface SealedToken {
 }
 
 export function base64ToBytes(b64: string): Uint8Array {
-  const binary = atob(b64.trim());
+  // Tolera espaços/quebras e o alfabeto url-safe; a validação real é o
+  // tamanho de 32 bytes exigido em importKey().
+  const normalized = b64.replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/");
+  const binary = atob(normalized);
   const out = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) out[i] = binary.charCodeAt(i);
   return out;
@@ -46,15 +49,17 @@ export async function sealToken(
   encKeyB64: string,
 ): Promise<SealedToken> {
   const key = await importKey(encKeyB64);
+  // IV de 96 bits, aleatório e NOVO a cada chamada (nunca reutilizado com a
+  // mesma chave). Persistido junto do ciphertext em meta_connection_secrets.
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const sealed = new Uint8Array(
     await crypto.subtle.encrypt(
-      { name: "AES-GCM", iv },
+      { name: "AES-GCM", iv, tagLength: 128 },
       key,
       new TextEncoder().encode(plaintext),
     ),
   );
-  // WebCrypto AES-GCM: saída = ciphertext || tag(16 bytes)
+  // WebCrypto AES-GCM: saída = ciphertext || tag(16 bytes / 128 bits)
   const tag = sealed.slice(sealed.length - 16);
   const cipher = sealed.slice(0, sealed.length - 16);
   return {
