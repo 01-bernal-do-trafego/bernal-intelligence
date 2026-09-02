@@ -62,10 +62,16 @@ function ts(v: unknown): string | null {
 function s(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
+/**
+ * Fallback do intervalo `last_30d` (a Meta = últimos 30 dias SEM hoje). Só
+ * usado se a resposta agregada não trouxer `date_start`/`date_stop`; o valor
+ * autoritativo é o que a Meta devolve, gravado por linha. Cada sincronização
+ * grava o SEU intervalo -> `last_30d` de dias diferentes convivem.
+ */
 function last30dRange(): { from: string; to: string } {
-  const to = new Date();
-  const from = new Date(to.getTime() - 29 * 86400000);
   const iso = (d: Date) => d.toISOString().slice(0, 10);
+  const to = new Date(Date.now() - 1 * 86400000); // ontem
+  const from = new Date(to.getTime() - 29 * 86400000); // 30 dias, sem hoje
   return { from: iso(from), to: iso(to) };
 }
 

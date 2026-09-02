@@ -15,12 +15,22 @@
 --       stale, insere o run novo e devolve o id; unique_violation vira
 --       'sync_already_running'. Passos 1+2 numa transação (sem corrida).
 --   (c) meta_sync_release(run_id, status, stats, error) -> finaliza o run.
+--   (d) meta_insights_periodic — IDENTIDADE REAL DO INTERVALO.
+--       A META 1 chaveava presets só por (level, entity_id, period_key,
+--       attribution_window): `last_30d` sincronizado em dias diferentes
+--       sobrescrevia a versão anterior. Errado para reach/frequency, que NÃO
+--       podem ser reconstruídos somando o diário. Agora a unicidade é o
+--       intervalo:  (level, entity_id, date_from, date_to, attribution_window).
+--       `period_key` continua como RÓTULO (last_30d | last_7d | this_month |
+--       custom | ...) para achar "o último last_30d" rápido. Presets e custom
+--       usam a MESMA identidade. meta_insights_periodic tem 0 linhas hoje, o
+--       swap de índice é seguro; idempotente (drop if exists / create if not
+--       exists).
+--   (e) meta_upsert_insights_periodic(...) -> upsert com conflito no intervalo.
 --
---   A estrutura (meta_campaigns/adsets/ads) e os insights
---   (meta_insights_daily/periodic) são gravados DIRETO pelo service_role na
---   Edge Function `meta-sync` (upsert on conflict pelo id da Meta / pela chave
---   de insight) — a META 1 já previu isso. Aqui só entram os objetos de
---   controle da rodada.
+--   A estrutura (meta_campaigns/adsets/ads) e meta_insights_daily são gravados
+--   DIRETO pelo service_role na Edge Function `meta-sync` (upsert on conflict
+--   pelo id da Meta / pela chave de insight diário) — a META 1 já previu isso.
 --
 --   SECURITY DEFINER, search_path='', EXECUTE só service_role.
 -- =============================================================================
@@ -119,10 +129,26 @@ $$;
 comment on function public.meta_sync_release(uuid, public.meta_sync_status, jsonb, text) is
   'META 5 — finaliza um meta_sync_runs. error_text já vem sanitizado. Só service_role.';
 
--- (d) upsert dos insights AGREGADOS de período. Alvo de conflito explícito
---     (o índice único é PARCIAL: where period_key <> 'custom') para não
---     depender da inferência do PostgREST. Só presets aqui (period_key
---     nunca é 'custom' nesta etapa).
+-- (d) meta_insights_periodic: unicidade = INTERVALO (não o preset)
+--     Substitui os dois índices parciais da META 1 por UM só, cobrindo todas
+--     as linhas (preset e custom). Seguro: 0 linhas hoje. Idempotente.
+drop index if exists public.meta_insights_periodic_preset_uq;
+drop index if exists public.meta_insights_periodic_custom_uq;
+
+create unique index if not exists meta_insights_periodic_interval_uq
+  on public.meta_insights_periodic
+  (level, entity_id, date_from, date_to, attribution_window);
+
+-- lookup: "o agregado mais recente do preset X para a entidade" (ex.: último
+-- last_30d de uma conta) sem varrer todos os intervalos.
+create index if not exists meta_insights_periodic_preset_lookup
+  on public.meta_insights_periodic
+  (level, entity_id, period_key, attribution_window, date_to desc);
+
+-- (e) upsert dos insights AGREGADOS de período. Conflito no INTERVALO
+--     (level, entity_id, date_from, date_to, attribution_window) — bate com
+--     meta_insights_periodic_interval_uq. `period_key` é só rótulo e pode ser
+--     atualizado (ex.: um intervalo antes gravado como 'custom' vira 'last_30d').
 create or replace function public.meta_upsert_insights_periodic(
   p_client_id      uuid,
   p_ad_account_ref uuid,
@@ -156,7 +182,7 @@ begin
       nullif(r->>'campaign_id','')             as campaign_id,
       nullif(r->>'adset_id','')                as adset_id,
       nullif(r->>'ad_id','')                   as ad_id,
-      coalesce(nullif(r->>'period_key',''), 'last_30d') as period_key,
+      coalesce(nullif(r->>'period_key',''), 'custom') as period_key,
       (r->>'date_from')::date                   as date_from,
       (r->>'date_to')::date                     as date_to,
       coalesce(nullif(r->>'attribution_window',''), '7d_click_1d_view') as attribution_window,
@@ -168,7 +194,10 @@ begin
       nullif(r->>'inline_link_clicks','')::bigint as inline_link_clicks,
       nullif(r->>'frequency','')::numeric      as frequency
     from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) as r
-    where r->>'entity_id' is not null and r->>'period_key' <> 'custom'
+    where r->>'entity_id' is not null
+      and r->>'date_from' ~ '^\d{4}-\d{2}-\d{2}$'
+      and r->>'date_to'   ~ '^\d{4}-\d{2}-\d{2}$'
+      and (r->>'date_from')::date <= (r->>'date_to')::date
   ),
   up as (
     insert into public.meta_insights_periodic (
@@ -183,16 +212,14 @@ begin
       attribution_window, currency, spend, impressions, reach, clicks,
       inline_link_clicks, frequency, now()
     from src
-    on conflict (level, entity_id, period_key, attribution_window)
-      where period_key <> 'custom'
+    on conflict (level, entity_id, date_from, date_to, attribution_window)
     do update set
       ad_account_ref     = excluded.ad_account_ref,
       ad_account_id      = excluded.ad_account_id,
       campaign_id        = excluded.campaign_id,
       adset_id           = excluded.adset_id,
       ad_id              = excluded.ad_id,
-      date_from          = excluded.date_from,
-      date_to            = excluded.date_to,
+      period_key         = excluded.period_key,
       currency           = excluded.currency,
       spend              = excluded.spend,
       impressions        = excluded.impressions,
@@ -209,8 +236,10 @@ end;
 $$;
 
 comment on function public.meta_upsert_insights_periodic(uuid, uuid, jsonb) is
-  'META 5 — upsert dos totais de período (reach/frequency com regras do Ads '
-  'Manager). Conflito explícito no índice parcial. Só service_role.';
+  'META 5 — upsert dos totais de período. Unicidade = intervalo '
+  '(level, entity_id, date_from, date_to, attribution_window); period_key é '
+  'rótulo. reach/frequency são o agregado da Meta para AQUELE intervalo — '
+  'nunca soma do diário. Só service_role.';
 
 -- privilégios
 revoke all on function public.meta_sync_acquire(uuid, uuid, uuid, public.meta_sync_trigger, date, date, uuid)
@@ -234,4 +263,12 @@ grant execute on function public.meta_upsert_insights_periodic(uuid, uuid, jsonb
 --   drop function if exists public.meta_sync_release(uuid, public.meta_sync_status, jsonb, text);
 --   drop function if exists public.meta_sync_acquire(uuid, uuid, uuid, public.meta_sync_trigger, date, date, uuid);
 --   drop index if exists public.meta_sync_runs_one_running;
+--   drop index if exists public.meta_insights_periodic_preset_lookup;
+--   drop index if exists public.meta_insights_periodic_interval_uq;
+--   create unique index meta_insights_periodic_preset_uq
+--     on public.meta_insights_periodic (level, entity_id, period_key, attribution_window)
+--     where period_key <> 'custom';
+--   create unique index meta_insights_periodic_custom_uq
+--     on public.meta_insights_periodic (level, entity_id, date_from, date_to, attribution_window)
+--     where period_key = 'custom';
 -- =============================================================================

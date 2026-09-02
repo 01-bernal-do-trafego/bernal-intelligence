@@ -127,6 +127,13 @@ export function toDailyRows(rows: unknown[], ctx: Ctx): DailyInsightRow[] {
   return out;
 }
 
+/**
+ * Linhas agregadas -> meta_insights_periodic. A unicidade é o INTERVALO
+ * (date_from, date_to): cada sincronização grava o seu, então `last_30d` de
+ * dias diferentes convivem. `period_key` é só rótulo. `date_from`/`date_to`
+ * vêm da própria Meta (`date_start`/`date_stop`); o fallback só entra se a
+ * resposta os omitir. Linha com intervalo inválido (from > to) é descartada.
+ */
 export function toPeriodicRows(
   rows: unknown[],
   ctx: Ctx,
@@ -140,12 +147,10 @@ export function toPeriodicRows(
     const raw = r as Record<string, unknown>;
     const base = baseRow(raw, ctx);
     if (!base) continue;
-    out.push({
-      ...base,
-      period_key: periodKey,
-      date_from: isoDate(raw.date_start) ?? fallbackFrom,
-      date_to: isoDate(raw.date_stop) ?? fallbackTo,
-    });
+    const dateFrom = isoDate(raw.date_start) ?? fallbackFrom;
+    const dateTo = isoDate(raw.date_stop) ?? fallbackTo;
+    if (!dateFrom || !dateTo || dateFrom > dateTo) continue;
+    out.push({ ...base, period_key: periodKey, date_from: dateFrom, date_to: dateTo });
   }
   return out;
 }

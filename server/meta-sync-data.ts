@@ -118,7 +118,9 @@ export const getMetaValidationOverview = cache(
     try {
       const supabase = await createSupabaseServerClient();
 
-      const [acctRes, runRes, accTotRes, campTotRes, campRes, cCnt, sCnt, aCnt] =
+      // 1. conta + run + o agregado de conta MAIS RECENTE do preset last_30d
+      //    (chave real = intervalo; pegamos o intervalo com date_to mais novo).
+      const [acctRes, runRes, accTotRes, campRes, cCnt, sCnt, aCnt] =
         await Promise.all([
           supabase
             .from("meta_ad_accounts")
@@ -137,19 +139,14 @@ export const getMetaValidationOverview = cache(
             .maybeSingle(),
           supabase
             .from("meta_insights_periodic")
-            .select("spend, impressions, reach, clicks, inline_link_clicks, frequency, date_from, date_to")
+            .select("spend, impressions, reach, clicks, inline_link_clicks, frequency, date_from, date_to, attribution_window")
             .eq("client_id", clientId)
             .eq("level", "account")
             .eq("period_key", "last_30d")
+            .order("date_to", { ascending: false })
             .order("synced_at", { ascending: false })
             .limit(1)
             .maybeSingle(),
-          supabase
-            .from("meta_insights_periodic")
-            .select("entity_id, spend, impressions, reach, clicks, inline_link_clicks, frequency")
-            .eq("client_id", clientId)
-            .eq("level", "campaign")
-            .eq("period_key", "last_30d"),
           supabase
             .from("meta_campaigns")
             .select("campaign_id, name, status, effective_status")
@@ -172,15 +169,27 @@ export const getMetaValidationOverview = cache(
       const run = runRes.data as Record<string, unknown> | null;
       const accTot = accTotRes.data as Record<string, unknown> | null;
 
+      // 2. campanhas do MESMO intervalo do agregado de conta (consistência).
+      let campTotData: Record<string, unknown>[] = [];
+      if (accTot && typeof accTot.date_from === "string" && typeof accTot.date_to === "string") {
+        const campTotRes = await supabase
+          .from("meta_insights_periodic")
+          .select("entity_id, spend, impressions, reach, clicks, inline_link_clicks, frequency")
+          .eq("client_id", clientId)
+          .eq("level", "campaign")
+          .eq("date_from", accTot.date_from)
+          .eq("date_to", accTot.date_to)
+          .eq("attribution_window", accTot.attribution_window ?? "7d_click_1d_view");
+        campTotData = (campTotRes.data ?? []) as Record<string, unknown>[];
+      }
+
       const campMeta = new Map<string, Record<string, unknown>>(
         ((campRes.data ?? []) as Record<string, unknown>[]).map((r) => [
           String(r.campaign_id),
           r,
         ]),
       );
-      const campaigns: MetaValidationCampaignRow[] = (
-        (campTotRes.data ?? []) as Record<string, unknown>[]
-      )
+      const campaigns: MetaValidationCampaignRow[] = campTotData
         .map((r) => {
           const t = totalsFromPeriodicRow(r);
           const meta = campMeta.get(String(r.entity_id));

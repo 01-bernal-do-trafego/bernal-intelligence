@@ -22,10 +22,14 @@ import {
  * O resultado vai para `meta_insights_periodic`. Cards/totais leem de lá;
  * gráficos leem de `meta_insights_daily`.
  *
- *   presets  → linha por (level, entity, period_key, attribution_window),
- *              sobrescrita a cada sync (janela móvel sempre atual).
- *   custom   → linha por (level, entity, date_from, date_to, attr_window),
- *              cache sob demanda quando o usuário escolhe um intervalo livre.
+ * ── IDENTIDADE DO AGREGADO (revisão META 5) ──────────────────────────────
+ * A unicidade de uma linha de `meta_insights_periodic` é o INTERVALO:
+ *   (level, entity_id, date_from, date_to, attribution_window)
+ * `period_key` (`last_30d`, `last_7d`, `this_month`, `custom`, ...) é só um
+ * RÓTULO — não define unicidade. Assim `last_30d` calculado em datas
+ * diferentes gera linhas distintas que CONVIVEM (o período anterior continua
+ * disponível), e `reach`/`frequency` ficam associados ao intervalo correto.
+ * Ver `lib/meta/periodic-identity.ts`.
  */
 
 export const META_PERIOD_PRESET_KEYS = PERIOD_PRESETS.map((p) => p.value);
