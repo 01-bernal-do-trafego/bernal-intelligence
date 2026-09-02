@@ -261,16 +261,39 @@ export default async function ClientDashboardPage({
 
       {(dashboard.dataStatus === "real" || dashboard.dataStatus === "demo") && (
         <>
+          {dashboard.dataStatus === "real" &&
+            dashboard.selectedCoverage &&
+            dashboard.selectedCoverage.status !== "complete" && (
+              <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-4 py-2 text-sm text-warning">
+                <Info className="mt-0.5 size-4 shrink-0" />
+                <p>
+                  {dashboard.selectedCoverage.status === "empty"
+                    ? "Este período ainda não foi sincronizado no histórico diário."
+                    : `Período incompleto: ${dashboard.selectedCoverage.missingDates.length} dia(s) sem dados no histórico diário` +
+                      (dashboard.selectedCoverage.missingDates[0]
+                        ? ` (a partir de ${dashboard.selectedCoverage.missingDates[0]})`
+                        : "") +
+                      "."}{" "}
+                  {dashboard.totalsFromAggregate
+                    ? "Os totais abaixo vêm do agregado da Meta (corretos); os gráficos mostram só os dias já sincronizados."
+                    : "Totais e gráficos podem estar parciais. Rode “Sincronizar Meta”."}
+                </p>
+              </div>
+            )}
+
           <div className="flex flex-col gap-3 border-y border-border py-4">
             {dashboard.dataStatus === "real" &&
               dashboard.range.start &&
               dashboard.range.end && (
                 <p className="text-xs text-muted">
                   Período: {dashboard.range.start} → {dashboard.range.end}
+                  {dashboard.selectedCoverage?.partialToday
+                    ? " · hoje é parcial"
+                    : ""}
                   {dashboard.periodicInterval &&
                   (dashboard.periodicInterval.from !== dashboard.range.start ||
                     dashboard.periodicInterval.to !== dashboard.range.end)
-                    ? ` · alcance agregado: ${dashboard.periodicInterval.from} → ${dashboard.periodicInterval.to}`
+                    ? ` · agregado Meta: ${dashboard.periodicInterval.from} → ${dashboard.periodicInterval.to}`
                     : ""}
                 </p>
               )}
@@ -381,6 +404,15 @@ export default async function ClientDashboardPage({
                         Não somável para o total do período.
                       </p>
                     )}
+                    {dashboard.mode === "real" &&
+                      dashboard.selectedCoverage &&
+                      dashboard.selectedCoverage.status !== "complete" && (
+                        <p className="mt-2 text-[11px] text-warning">
+                          Gráfico incompleto:{" "}
+                          {dashboard.selectedCoverage.missingDates.length} dia(s)
+                          sem dados no período.
+                        </p>
+                      )}
                   </ChartContainer>
                 );
               })}

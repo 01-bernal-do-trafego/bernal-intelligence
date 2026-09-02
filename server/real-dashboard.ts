@@ -3,7 +3,17 @@ import "server-only";
 import type { PeriodPreset } from "@/lib/date-range";
 import { eachDay } from "@/lib/date-range";
 import { compareMetric } from "@/lib/comparison";
-import { metaPresetRange, metaPreviousRange, todayInOffset } from "@/lib/meta/date-preset";
+import {
+  META_DASHBOARD_PRESETS,
+  metaPresetRange,
+  metaPreviousRange,
+  todayInOffset,
+} from "@/lib/meta/date-preset";
+import {
+  coverageByPreset as computeCoverageByPreset,
+  dailyHorizon,
+  rangeCoverage,
+} from "@/lib/meta/daily-coverage";
 import { utcOffsetMinutes } from "@/lib/meta/timezone";
 import { META_DEFAULT_ATTRIBUTION_WINDOW } from "@/lib/meta/config";
 import {
@@ -124,6 +134,10 @@ export async function getRealClientDashboard(
   const today = todayInOffset(utcOffsetMinutes(tz) ?? 0);
   const range = metaPresetRange(preset, today);
   const previous = metaPreviousRange(range);
+  const horizon = dailyHorizon(today);
+  // menor data a buscar: cobre o horizonte E o período anterior (quando existir).
+  const dailyFrom = previous.start < horizon.start ? previous.start : horizon.start;
+  const dailyTo = range.end > horizon.end ? range.end : horizon.end;
 
   // ---- campanhas do escopo ------------------------------------------------
   let campQuery = supabase
@@ -158,13 +172,24 @@ export async function getRealClientDashboard(
     .eq("client_id", client.id)
     .eq("level", level)
     .eq("attribution_window", ATTR)
-    .gte("date", previous.start)
-    .lte("date", range.end);
+    .gte("date", dailyFrom)
+    .lte("date", dailyTo);
   if (scope === "campaign") dailyQuery = dailyQuery.eq("entity_id", campaignId);
   else if (scope === "account")
     dailyQuery = dailyQuery.eq("ad_account_id", accountId);
   const { data: dailyData } = await dailyQuery;
   const dailyRows = (dailyData ?? []) as Record<string, unknown>[];
+
+  // datas já sincronizadas no escopo (para calcular cobertura por preset).
+  const presentDates = new Set<string>(
+    dailyRows.map((r) => String(r.date)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
+  );
+  const coverageAll = computeCoverageByPreset({
+    presets: META_DASHBOARD_PRESETS,
+    today,
+    presentDates,
+  });
+  const selectedCoverage = rangeCoverage({ range, today, presentDates });
 
   const toDaily = (r: Record<string, unknown>): DailyInsightLike => ({
     date: String(r.date),
@@ -224,12 +249,30 @@ export async function getRealClientDashboard(
       ? campaignId
       : (singleAccount ?? linked[0])?.adAccountId ?? "";
 
-  let periodicRow: { reach: number | null; frequency: number | null; date_from: string; date_to: string } | null =
-    null;
+  // O agregado de período da Meta (quando existe) é a fonte AUTORITATIVA dos
+  // totais do card — bate com o Ads Manager e não sofre com buraco na série
+  // diária. reach/frequency SÓ vêm dele. Sem ele: cai na soma do diário para
+  // as aditivas; reach/frequency ficam indisponíveis.
+  let periodicRow:
+    | {
+        spend: number | null;
+        impressions: number | null;
+        clicks: number | null;
+        inlineLinkClicks: number | null;
+        reach: number | null;
+        frequency: number | null;
+        date_from: string;
+        date_to: string;
+      }
+    | null = null;
+  // Só usa o agregado quando o escopo é consolidável (1 conta / conta / campanha).
+  // Multi-conta "todas": totais das aditivas vêm da soma do diário entre contas.
   if (consolidable && reachEntity) {
     const { data: perData } = await supabase
       .from("meta_insights_periodic")
-      .select("reach, frequency, date_from, date_to")
+      .select(
+        "spend, impressions, clicks, inline_link_clicks, reach, frequency, date_from, date_to",
+      )
       .eq("client_id", client.id)
       .eq("level", level)
       .eq("entity_id", reachEntity)
@@ -241,6 +284,10 @@ export async function getRealClientDashboard(
     const p = perData as Record<string, unknown> | null;
     if (p) {
       periodicRow = {
+        spend: num(p.spend),
+        impressions: num(p.impressions),
+        clicks: num(p.clicks),
+        inlineLinkClicks: num(p.inline_link_clicks),
         reach: num(p.reach),
         frequency: num(p.frequency),
         date_from: String(p.date_from),
@@ -248,10 +295,32 @@ export async function getRealClientDashboard(
       };
     }
   }
+  // reach/frequency indisponíveis se: não consolidável (multi-conta) OU sem
+  // agregado sincronizado para o intervalo.
   const periodicMissing = consolidable && !periodicRow;
 
-  const curTotals = buildRealTotals(additiveCur, periodicRow);
+  const additiveSource =
+    periodicRow != null
+      ? {
+          spend: periodicRow.spend ?? additiveCur.spend,
+          impressions: periodicRow.impressions ?? additiveCur.impressions,
+          clicks: periodicRow.clicks ?? additiveCur.clicks,
+          inlineLinkClicks:
+            periodicRow.inlineLinkClicks ?? additiveCur.inlineLinkClicks,
+        }
+      : additiveCur;
+  const curTotals = buildRealTotals(
+    additiveSource,
+    consolidable ? periodicRow : null,
+  );
   const prevTotals = buildRealTotals(additivePrev, null);
+  /** totais do card vieram do agregado da Meta (autoritativo)? */
+  const totalsFromAggregate = periodicRow != null;
+
+  // totais das aditivas vêm de soma de diário incompleto?
+  const additiveIncomplete =
+    !totalsFromAggregate && selectedCoverage.status !== "complete";
+  const INCOMPLETE_NOTE = `Período incompleto no histórico diário — ${selectedCoverage.missingDates.length} dia(s) sem dados. Rode “Sincronizar Meta”.`;
 
   // ---- métricas ---------------------------------------------------------
   const metrics = {} as Record<MetricKey, DashboardMetric>;
@@ -265,9 +334,17 @@ export async function getRealClientDashboard(
       } else if (periodicMissing) {
         entry = { ...entry, available: false, unavailableReason: REACH_NOT_SYNCED_NOTE };
       }
-    } else if (spec.format !== "currency" && spec.format !== "number") {
-      // derivadas: indisponível quando denominador zerado (valor null)
-      if (cur === null) entry = { ...entry, available: false, unavailableReason: "Sem base para calcular no período." };
+    } else {
+      if (spec.format !== "currency" && spec.format !== "number" && cur === null) {
+        entry = {
+          ...entry,
+          available: false,
+          unavailableReason: "Sem base para calcular no período.",
+        };
+      } else if (additiveIncomplete) {
+        // mostra o valor, mas sinaliza que pode estar incompleto.
+        entry = { ...entry, unavailableReason: INCOMPLETE_NOTE };
+      }
     }
     metrics[spec.key] = entry;
   }
@@ -413,5 +490,8 @@ export async function getRealClientDashboard(
       ...CONVERSION_KEYS,
       ...(consolidable && !periodicMissing ? [] : (["reach", "frequency"] as MetricKey[])),
     ],
+    coverageByPreset: coverageAll,
+    selectedCoverage,
+    totalsFromAggregate,
   };
 }

@@ -17,9 +17,15 @@ Body: `{ "clientId": "<uuid>" }`
 
 Para cada conta `is_linked` do cliente:
 `meta_sync_acquire` (trava de concorrência) → `campaigns`/`adsets`/`ads`
-(`upsert on conflict` pelo id da Meta) → insights `account`/`campaign`/`adset`/`ad`
-diários (`time_increment=1`) e agregados (sem `time_increment`) para
-`date_preset=last_30d` → `meta_sync_release`.
+(`upsert on conflict` pelo id da Meta) → insights `account`/`campaign`/`adset`/`ad`:
+- **diário** (`time_increment=1`) com `time_range` calculado — o horizonte que
+  cobre TODOS os presets sem buracos: `until` = hoje (fuso da conta),
+  `since` = menor entre (hoje − 30) e (1º do mês anterior);
+- **agregado** (sem `time_increment`) — UM por preset (`today`, `yesterday`,
+  `last_7d`, `last_14d`, `last_30d`, `this_month`, `last_month`); a unicidade em
+  `meta_insights_periodic` é o INTERVALO, então os 7 convivem.
+
+→ `meta_sync_release`.
 
 Resposta 200: `{ "status": "ok"|"error", "dateFrom", "dateTo", "results": [ { adAccountId, runId, status: "success"|"partial"|"error", stats } ] }` — **sem token**.
 

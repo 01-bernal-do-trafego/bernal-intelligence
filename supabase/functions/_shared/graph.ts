@@ -283,22 +283,35 @@ export function insightFields(level: "account" | "campaign" | "adset" | "ad"): s
 /**
  * GET /{act_id}/insights de um nível. `timeIncrement` = "1" p/ série diária,
  * omitido p/ o agregado de período (regras do Ads Manager em reach/frequency).
+ *
+ * Janela: `timeRange` (since/until, YYYY-MM-DD) OU `datePreset`. Para a série
+ * diária usamos `timeRange` calculado (cobre todos os presets sem buracos);
+ * para os agregados de período usamos `datePreset` (as datas que a Meta
+ * devolve são gravadas por linha).
  */
 export async function listInsights(
   input: GraphConfig & {
     token: string;
     adAccountId: string; // act_123
     level: "account" | "campaign" | "adset" | "ad";
-    datePreset: string; // "last_30d"
+    datePreset?: string; // "last_30d"
+    timeRange?: { since: string; until: string };
     timeIncrement?: "1";
     pageLimit?: number;
     maxPages?: number;
   },
 ): Promise<{ rows: unknown[]; pages: number }> {
-  const params: Record<string, string> = {
-    level: input.level,
-    date_preset: input.datePreset,
-  };
+  const params: Record<string, string> = { level: input.level };
+  if (input.timeRange) {
+    params.time_range = JSON.stringify({
+      since: input.timeRange.since,
+      until: input.timeRange.until,
+    });
+  } else if (input.datePreset) {
+    params.date_preset = input.datePreset;
+  } else {
+    throw new Error("listInsights: timeRange ou datePreset é obrigatório");
+  }
   if (input.timeIncrement) params.time_increment = input.timeIncrement;
 
   return listEdge({

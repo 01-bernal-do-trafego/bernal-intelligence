@@ -36,7 +36,6 @@ import {
 const GRAPH_BASE = Deno.env.get("META_GRAPH_BASE") ?? "https://graph.facebook.com";
 const GRAPH_VERSION = Deno.env.get("META_GRAPH_VERSION") ?? "v26.0";
 const ATTR_WINDOW = "7d_click_1d_view";
-const DATE_PRESET = "last_30d"; // série diária: janela de 30 dias
 
 // Agregados de período: um por preset. A unicidade em meta_insights_periodic é
 // o INTERVALO (date_from,date_to) — o preset é só rótulo. Assim reach/frequency
@@ -98,6 +97,20 @@ function accountToday(timezoneName: string | null): string {
  * hoje; this_month 1º->hoje; last_month mês anterior). Só usado se a resposta
  * agregada não trouxer date_start/date_stop — o valor autoritativo é o da Meta.
  */
+/**
+ * Intervalo MÍNIMO da série diária para cobrir TODOS os presets sem buracos:
+ *   until = hoje (fuso da conta)
+ *   since = menor entre (hoje - 30) e (1º do mês anterior)
+ */
+function dailyHorizon(today: string): { from: string; to: string } {
+  const minus30 = addDays(today, -30);
+  const [yy, mm] = today.split("-").map(Number);
+  const py = mm === 1 ? yy - 1 : yy;
+  const pm = mm === 1 ? 12 : mm - 1;
+  const prevMonth = `${py}-${String(pm).padStart(2, "0")}-01`;
+  return { from: minus30 < prevMonth ? minus30 : prevMonth, to: today };
+}
+
 function presetRange(preset: PeriodicPreset, today: string): { from: string; to: string } {
   const y = addDays(today, -1);
   const [yy, mm] = today.split("-").map(Number);
@@ -225,11 +238,12 @@ Deno.serve(async (req: Request) => {
 
   const graph = { graphBase: GRAPH_BASE, version: GRAPH_VERSION, token };
   const results: Array<Record<string, unknown>> = [];
-  let envelopeRange = presetRange("last_30d", accountToday(null));
+  let envelopeRange = dailyHorizon(accountToday(null));
 
   for (const acc of accounts) {
     const today = accountToday(acc.timezone_name);
-    const range = presetRange("last_30d", today); // janela primária do run
+    // série diária: horizonte que cobre todos os presets (sem buracos).
+    const range = dailyHorizon(today);
     envelopeRange = range;
 
     // ---- acquire (trava de concorrência) --------------------------------
@@ -433,13 +447,14 @@ Deno.serve(async (req: Request) => {
     for (const level of levels) {
       if (fatal) break;
 
-      // diário (time_increment=1) -> meta_insights_daily
+      // diário (time_increment=1) -> meta_insights_daily.
+      // time_range = horizonte que cobre TODOS os presets.
       try {
         const { rows, pages } = await listInsights({
           ...graph,
           adAccountId: acc.ad_account_id,
           level,
-          datePreset: DATE_PRESET,
+          timeRange: { since: range.from, until: range.to },
           timeIncrement: "1",
         });
         const daily = toDailyRows(rows, ctxFor(level)).map((d) => ({ ...d }));

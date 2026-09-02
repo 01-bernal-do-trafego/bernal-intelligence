@@ -13,6 +13,7 @@ import type {
   TimePoint,
 } from "@/types/domain";
 import type { ClientRecord } from "@/types/client";
+import type { Coverage } from "@/lib/meta/daily-coverage";
 import { getDashboardConfig } from "./dashboard-config";
 import { getClientDataMode, type DashboardDataStatus } from "./client-data-mode";
 import { getRealClientDashboard } from "./real-dashboard";
@@ -99,6 +100,12 @@ export interface ClientDashboardData {
   periodicInterval?: { from: string; to: string } | null;
   /** chaves de métrica sem dado real nesta fase (para cards/colunas). */
   unavailableMetricKeys?: MetricKey[];
+  /** cobertura da série diária por preset (todas as datas exigidas existem?). */
+  coverageByPreset?: Record<string, Coverage>;
+  /** cobertura do período selecionado. */
+  selectedCoverage?: Coverage;
+  /** totais do card vieram do agregado autoritativo da Meta (vs soma do diário)? */
+  totalsFromAggregate?: boolean;
 }
 
 const SERIES_VALUE: Record<string, (t: DailyTotal) => number> = {
