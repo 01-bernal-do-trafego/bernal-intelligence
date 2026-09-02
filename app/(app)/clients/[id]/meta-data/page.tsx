@@ -231,9 +231,8 @@ export default async function MetaDataPage({ params, searchParams }: PageProps) 
               </h2>
               <div className="rounded-lg border border-border bg-surface px-4 py-3 text-sm">
                 <p className="text-muted">
-                  Configurado (editor de dashboard):{" "}
-                  <span className="text-foreground">{resultMetric.label}</span>{" "}
-                  (<span className="font-mono text-xs">{resultMetric.type}</span>).
+                  Configurado no editor de dashboard (“Resultado principal”):{" "}
+                  <span className="text-foreground">{resultMetric.label}</span>.
                   Resolvido em leitura — mudar no editor e recarregar altera
                   este valor <span className="text-foreground">sem novo sync</span>.
                 </p>

@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
   AVAILABLE_CHART_METRICS,
@@ -7,11 +9,15 @@ import {
   MAX_CHARTS,
   METRIC_BEHAVIORS,
   REQUIRED_TABLE_COLUMN,
+  RESULT_METRIC_OPTIONS,
+  RESULT_METRIC_TYPE_LABEL,
   RESULT_METRIC_TYPES,
   TABLE_COLUMN_CATALOG,
   VISUALIZATION_CATALOG,
   addChart,
+  catalogLabel,
   changeChartMetric,
+  chartMetricLabel,
   compatibleVisualizations,
   defaultChartTitle,
   enabledKeys,
@@ -20,9 +26,11 @@ import {
   newChartConfig,
   parseDashboardConfig,
   removeChart,
+  resultMetricTypeLabel,
   sanitizeDashboardConfigInput,
   toggleItem,
   updateChart,
+  visualizationLabel,
   type ChartConfig,
   type DashboardConfigValue,
 } from "@/lib/dashboard-config";
@@ -462,6 +470,229 @@ describe("métrica principal e colunas", () => {
       { key: "b", enabled: false },
     ];
     expect(toggleItem(list, "b").find((i) => i.key === "b")?.enabled).toBe(true);
+  });
+});
+
+/* ============ Resultado principal no editor (seção própria) ============ */
+
+describe("Resultado principal — select amigável do editor", () => {
+  const byLabel = new Map(RESULT_METRIC_OPTIONS.map((o) => [o.label, o.value]));
+
+  it("as opções incluem pelo menos as métricas pedidas nesta fase", () => {
+    for (const label of [
+      "Conversas iniciadas",
+      "Total de contatos",
+      "Novos contatos",
+      "Leads",
+      "Compras",
+      "Cadastros",
+      "Agendamentos",
+    ]) {
+      expect(byLabel.has(label), label).toBe(true);
+    }
+  });
+
+  it("selecionar um rótulo salva o id técnico correspondente", () => {
+    expect(byLabel.get("Conversas iniciadas")).toBe("messaging_conversations_started");
+    expect(byLabel.get("Total de contatos")).toBe("messaging_contacts_total");
+    expect(byLabel.get("Novos contatos")).toBe("messaging_contacts_new");
+    expect(byLabel.get("Leads")).toBe("leads");
+    expect(byLabel.get("Compras")).toBe("purchases");
+    expect(byLabel.get("Cadastros")).toBe("registrations");
+    expect(byLabel.get("Agendamentos")).toBe("appointments");
+  });
+
+  it("toda opção tem value = ResultMetricType válido e label != id", () => {
+    const valid = new Set(RESULT_METRIC_TYPES);
+    for (const o of RESULT_METRIC_OPTIONS) {
+      expect(valid.has(o.value), o.value).toBe(true);
+      expect(o.label).not.toBe(o.value);
+      expect(o.label, o.value).not.toMatch(/_/); // nada de snake_case visível
+    }
+  });
+
+  it("cobre TODOS os tipos — o valor atual do cliente sempre aparece no select", () => {
+    expect(RESULT_METRIC_OPTIONS.map((o) => o.value).sort()).toEqual(
+      [...RESULT_METRIC_TYPES].sort(),
+    );
+  });
+
+  it("primeira versão prioriza mensageria (ordem de exibição)", () => {
+    expect(RESULT_METRIC_OPTIONS.slice(0, 3).map((o) => o.value)).toEqual([
+      "messaging_conversations_started",
+      "messaging_contacts_total",
+      "messaging_contacts_new",
+    ]);
+  });
+
+  it("editor CARREGA o result_metric atual do cliente", () => {
+    for (const type of [
+      "messaging_conversations_started",
+      "messaging_contacts_total",
+      "messaging_contacts_new",
+      "leads",
+    ] as const) {
+      const parsed = parseDashboardConfig({ result_metric: { type } });
+      expect(parsed.resultMetric.type).toBe(type);
+    }
+  });
+
+  it("result_metric inválido/desconhecido cai em `results` (nunca id cru)", () => {
+    const parsed = parseDashboardConfig({ result_metric: { type: "xpto_123" } });
+    expect(parsed.resultMetric.type).toBe("results");
+    expect(parsed.resultMetric.resultLabel).toBe("Resultados");
+  });
+
+  it("salvar persiste o type escolhido em dashboard_configs (roundtrip)", () => {
+    for (const type of [
+      "messaging_conversations_started",
+      "messaging_contacts_total",
+      "messaging_contacts_new",
+    ] as const) {
+      const input = baseConfig();
+      input.resultMetric = {
+        type,
+        resultLabel: RESULT_METRIC_TYPE_LABEL[type],
+        costLabel: "Custo",
+        behavior: "higher_is_better",
+      };
+      const out = sanitizeDashboardConfigInput(input);
+      expect(out.ok).toBe(true);
+      if (out.ok) {
+        expect(out.value.resultMetric.type).toBe(type);
+        // é exatamente o objeto que a server action grava
+        expect(out.value).toHaveProperty("layout");
+        expect(Object.keys(out.value).sort()).toEqual(["layout", "resultMetric"]);
+      }
+    }
+  });
+
+  it("Atacado do Chinelo: Conversas iniciadas ⇒ results = messaging_conversations_started", () => {
+    // seleção pela interface — o valor persistido é o id técnico.
+    expect(byLabel.get("Conversas iniciadas")).toBe("messaging_conversations_started");
+  });
+
+  it("trocar o result_metric NÃO dispara sincronização (server action)", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../app/(app)/clients/actions.ts", import.meta.url)),
+      "utf8",
+    );
+    // saveDashboardConfig só toca `dashboard_configs`; nada de sync/Meta.
+    const body = src.slice(src.indexOf("export async function saveDashboardConfig"));
+    expect(body).toContain('.from("dashboard_configs")');
+    expect(body).not.toMatch(/meta-sync|meta-function|syncMeta|callMetaFunction|insights/i);
+  });
+});
+
+/* ============ rótulos amigáveis — nenhum id técnico visível ============ */
+
+describe("labels amigáveis (IDs internos nunca viram rótulo)", () => {
+  const TECH_IDS = [
+    "messaging_conversations_started",
+    "messaging_contacts_total",
+    "messaging_contacts_new",
+    "cost_per_conversation",
+    "cost_per_result",
+  ];
+
+  it("resultMetricTypeLabel traduz e nunca devolve o id", () => {
+    expect(resultMetricTypeLabel("messaging_conversations_started")).toBe(
+      "Conversas iniciadas",
+    );
+    expect(resultMetricTypeLabel("messaging_contacts_total")).toBe("Total de contatos");
+    expect(resultMetricTypeLabel("messaging_contacts_new")).toBe("Novos contatos");
+    expect(resultMetricTypeLabel("conversations")).toBe("Conversas");
+    expect(resultMetricTypeLabel("results")).toBe("Resultados");
+    // desconhecido -> rótulo genérico, jamais o id
+    expect(resultMetricTypeLabel("algo_interno")).toBe("Resultados");
+  });
+
+  it("catálogos de card/gráfico/coluna têm rótulos amigáveis para métricas de conversão", () => {
+    expect(catalogLabel(CARD_CATALOG, "conversations")).toBe("Conversas");
+    expect(catalogLabel(CARD_CATALOG, "cost_per_conversation")).toBe("Custo por conversa");
+    expect(catalogLabel(CARD_CATALOG, "results")).toBe("Resultados");
+    expect(catalogLabel(CARD_CATALOG, "cost_per_result")).toBe("Custo por resultado");
+    expect(chartMetricLabel("messaging_conversations_started")).toBe("Conversas iniciadas");
+  });
+
+  it("nenhum rótulo de catálogo contém `_` ou é igual à sua key", () => {
+    for (const entry of [...CARD_CATALOG, ...TABLE_COLUMN_CATALOG, ...CHART_METRIC_CATALOG]) {
+      expect(entry.label, entry.key).not.toBe(entry.key);
+      expect(entry.label, entry.key).not.toMatch(/^[a-z0-9]+(_[a-z0-9]+)+$/);
+    }
+    for (const label of Object.values(RESULT_METRIC_TYPE_LABEL)) {
+      expect(label).not.toMatch(/_/);
+    }
+  });
+
+  it("fallback de rótulo desconhecido é genérico, nunca o id recebido", () => {
+    for (const id of TECH_IDS) {
+      expect(catalogLabel([], id)).not.toBe(id);
+      expect(catalogLabel([], id)).toBe("Métrica");
+    }
+    expect(chartMetricLabel("__inexistente__")).toBe("Métrica");
+    expect(visualizationLabel("__inexistente__")).toBe("Gráfico");
+  });
+});
+
+/* ====== conversões: configuráveis como resultado, bloqueadas como card ====== */
+
+describe("result_metric ≠ liberação da métrica como card/gráfico", () => {
+  it("as métricas de conversão seguem requiresMeta (bloqueadas no dashboard principal)", () => {
+    for (const key of [
+      "conversations",
+      "cost_per_conversation",
+      "messaging_conversations_started",
+      "purchases",
+      "revenue",
+      "roas",
+    ]) {
+      const card = CARD_CATALOG.find((c) => c.key === key);
+      if (card) expect(card.requiresMeta, `card ${key}`).toBe(true);
+      const chart = CHART_METRIC_CATALOG.find((c) => c.key === key);
+      if (chart) expect(chart.requiresMeta, `chart ${key}`).toBe(true);
+    }
+  });
+
+  it("mas messaging_* É selecionável como Resultado principal", () => {
+    const values = new Set(RESULT_METRIC_OPTIONS.map((o) => o.value));
+    expect(values.has("messaging_conversations_started")).toBe(true);
+    expect(values.has("messaging_contacts_total")).toBe(true);
+    expect(values.has("messaging_contacts_new")).toBe(true);
+  });
+
+  it("ativar um card de conversão continua sendo rejeitado", () => {
+    const input = baseConfig();
+    input.layout.cards = [
+      ...input.layout.cards.filter((c) => c.key !== "messaging_conversations_started"),
+      { key: "messaging_conversations_started", enabled: true },
+    ];
+    expect(sanitizeDashboardConfigInput(input)).toMatchObject({ ok: false });
+  });
+
+  it("adicionar um gráfico de conversão continua sendo rejeitado", () => {
+    const input = baseConfig();
+    input.layout.charts = [
+      {
+        id: "c_conv",
+        metric: "conversations",
+        visualization: "area",
+        title: "Conversas",
+        enabled: true,
+      },
+    ];
+    expect(sanitizeDashboardConfigInput(input)).toMatchObject({ ok: false });
+  });
+
+  it("selecionar messaging_conversations_started como resultado é aceito no save", () => {
+    const input = baseConfig();
+    input.resultMetric = {
+      type: "messaging_conversations_started",
+      resultLabel: "Conversas iniciadas",
+      costLabel: "Custo por conversa iniciada",
+      behavior: "higher_is_better",
+    };
+    expect(sanitizeDashboardConfigInput(input).ok).toBe(true);
   });
 });
 

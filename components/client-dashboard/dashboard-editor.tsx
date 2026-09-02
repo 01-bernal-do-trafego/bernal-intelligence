@@ -11,8 +11,7 @@ import {
   METRIC_BEHAVIORS,
   METRIC_BEHAVIOR_LABEL,
   REQUIRED_TABLE_COLUMN,
-  RESULT_METRIC_TYPES,
-  RESULT_METRIC_TYPE_LABEL,
+  RESULT_METRIC_OPTIONS,
   TABLE_COLUMN_CATALOG,
   catalogLabel,
   moveItem,
@@ -173,53 +172,79 @@ export function DashboardEditor({
       className="max-w-3xl"
     >
       <div className="max-h-[70vh] space-y-6 overflow-y-auto pr-1">
-        <section className="space-y-3">
-          <h3 className="text-sm font-semibold text-foreground">
-            Métrica principal
-          </h3>
-          <div className="grid gap-3 sm:grid-cols-3">
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted">Tipo</label>
-              <Select
-                options={RESULT_METRIC_TYPES.map((t) => ({
-                  value: t,
-                  label: RESULT_METRIC_TYPE_LABEL[t],
-                }))}
-                value={resultMetric.type}
-                onChange={(e) => onTypeChange(e.target.value as ResultMetricType)}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted">
-                Nome exibido
-              </label>
-              <Input
-                value={resultMetric.resultLabel}
-                onChange={(e) => setResultMetric({ resultLabel: e.target.value })}
-              />
-            </div>
-            <div className="space-y-1.5">
-              <label className="text-xs font-medium text-muted">
-                Comportamento
-              </label>
-              <Select
-                options={METRIC_BEHAVIORS.map((b) => ({
-                  value: b,
-                  label: METRIC_BEHAVIOR_LABEL[b],
-                }))}
-                value={resultMetric.behavior}
-                onChange={(e) =>
-                  setResultMetric({ behavior: e.target.value as MetricBehavior })
-                }
-              />
-            </div>
+        {/* ---- Resultado principal (seção própria, separada dos cards) ---- */}
+        <section className="space-y-3 rounded-xl border border-border bg-surface-elevated p-4">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground">
+              Resultado principal
+            </h3>
+            <p className="mt-1 text-xs text-muted">
+              O que conta como “Resultado” nos cards, gráficos e tabela deste
+              cliente. É resolvido na leitura dos dados — trocar aqui{" "}
+              <span className="text-foreground">não dispara sincronização</span>.
+            </p>
           </div>
+
+          <div className="space-y-1.5 sm:max-w-xs">
+            <label
+              htmlFor="result-metric-select"
+              className="text-xs font-medium text-muted"
+            >
+              Métrica de resultado
+            </label>
+            <Select
+              id="result-metric-select"
+              options={RESULT_METRIC_OPTIONS.map((o) => ({
+                value: o.value,
+                label: o.label,
+              }))}
+              value={resultMetric.type}
+              onChange={(e) => onTypeChange(e.target.value as ResultMetricType)}
+            />
+          </div>
+
           <p className="text-xs text-muted">
-            Custo por resultado: <span className="text-foreground">
-              {resultMetric.costLabel}
-            </span>{" "}
-            · sempre tratado como “quanto menor, melhor”.
+            Card de resultado:{" "}
+            <span className="text-foreground">{resultMetric.resultLabel}</span>{" "}
+            · custo:{" "}
+            <span className="text-foreground">{resultMetric.costLabel}</span>
           </p>
+
+          <details className="rounded-lg border border-border bg-surface px-3 py-2">
+            <summary className="cursor-pointer text-xs font-medium text-muted">
+              Personalização (opcional)
+            </summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted">
+                  Nome exibido
+                </label>
+                <Input
+                  value={resultMetric.resultLabel}
+                  onChange={(e) =>
+                    setResultMetric({ resultLabel: e.target.value })
+                  }
+                />
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-xs font-medium text-muted">
+                  Comportamento
+                </label>
+                <Select
+                  options={METRIC_BEHAVIORS.map((b) => ({
+                    value: b,
+                    label: METRIC_BEHAVIOR_LABEL[b],
+                  }))}
+                  value={resultMetric.behavior}
+                  onChange={(e) =>
+                    setResultMetric({
+                      behavior: e.target.value as MetricBehavior,
+                    })
+                  }
+                />
+              </div>
+            </div>
+          </details>
         </section>
 
         <ReorderableList

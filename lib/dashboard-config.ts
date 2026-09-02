@@ -18,31 +18,57 @@ import type { ResultMetricConfig, ResultMetricType } from "@/types/domain";
 /* Métrica principal                                                   */
 /* ================================================================== */
 
+/**
+ * Tipos de "Resultado principal" na ORDEM de exibição no editor. O valor é o
+ * id estável salvo em `dashboard_configs.result_metric.type`; o editor mostra
+ * SEMPRE o rótulo amigável (`RESULT_METRIC_TYPE_LABEL`), nunca o id.
+ */
 export const RESULT_METRIC_TYPES: readonly ResultMetricType[] = [
-  "leads",
-  "purchases",
-  "conversations",
   "messaging_conversations_started",
   "messaging_contacts_total",
   "messaging_contacts_new",
+  "leads",
+  "purchases",
   "registrations",
   "appointments",
+  "conversations",
   "results",
   "custom",
 ];
 
 export const RESULT_METRIC_TYPE_LABEL: Record<ResultMetricType, string> = {
-  leads: "Leads",
-  purchases: "Compras",
-  conversations: "Conversas",
   messaging_conversations_started: "Conversas iniciadas",
   messaging_contacts_total: "Total de contatos",
   messaging_contacts_new: "Novos contatos",
+  leads: "Leads",
+  purchases: "Compras",
   registrations: "Cadastros",
   appointments: "Agendamentos",
+  conversations: "Conversas",
   results: "Resultados",
   custom: "Personalizado",
 };
+
+/** Rótulo amigável de um tipo de resultado — nunca devolve o id técnico. */
+export function resultMetricTypeLabel(type: string): string {
+  return (
+    RESULT_METRIC_TYPE_LABEL[type as ResultMetricType] ??
+    RESULT_METRIC_TYPE_LABEL.results
+  );
+}
+
+/**
+ * Opções do select "Resultado principal" no editor — `{ value, label }` já na
+ * ordem de exibição. `value` é o que persiste; `label` é o que o usuário vê.
+ * Cobre TODOS os tipos para que o valor atual do cliente sempre apareça.
+ */
+export const RESULT_METRIC_OPTIONS: readonly {
+  value: ResultMetricType;
+  label: string;
+}[] = RESULT_METRIC_TYPES.map((value) => ({
+  value,
+  label: RESULT_METRIC_TYPE_LABEL[value],
+}));
 
 export const METRIC_BEHAVIORS: readonly MetricBehavior[] = [
   "higher_is_better",
@@ -114,7 +140,9 @@ export function chartMetricEntry(key: string): ChartMetricEntry | undefined {
 }
 
 export function chartMetricLabel(key: string): string {
-  return CHART_METRIC_BY_KEY.get(key)?.label ?? key;
+  // Nunca vaza o id técnico como rótulo visual (keys desconhecidas já são
+  // descartadas na normalização; isto é só defesa em profundidade).
+  return CHART_METRIC_BY_KEY.get(key)?.label ?? "Métrica";
 }
 
 /** Métricas que já têm fonte de dados (selecionáveis no editor). */
@@ -162,7 +190,7 @@ const VISUALIZATION_BY_KEY = new Map(
 );
 
 export function visualizationLabel(key: string): string {
-  return VISUALIZATION_BY_KEY.get(key as VisualizationType)?.label ?? key;
+  return VISUALIZATION_BY_KEY.get(key as VisualizationType)?.label ?? "Gráfico";
 }
 
 /** Visualizações compatíveis e já implementadas para uma métrica. */
@@ -741,7 +769,7 @@ export function catalogLabel(
   catalog: readonly CatalogEntry[],
   key: string,
 ): string {
-  return catalog.find((c) => c.key === key)?.label ?? key;
+  return catalog.find((c) => c.key === key)?.label ?? "Métrica";
 }
 
 export function enabledKeys(items: readonly LayoutItem[]): string[] {
