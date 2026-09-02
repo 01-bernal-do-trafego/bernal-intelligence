@@ -4,6 +4,7 @@ import {
   getMetricDefinition,
   isMetricCompatibleWithLevel,
   metricsByCategory,
+  requiresPeriodicAggregate,
   resolveMetricId,
   type MetricDefinition,
 } from "@/lib/metrics/registry";
@@ -28,6 +29,7 @@ const LEVELS = new Set([
 ]);
 const VIS = new Set(["line", "area", "bar", "horizontal_bar"]);
 const CATEGORIES = new Set(["meta_native", "calculated", "bernal"]);
+const PERIOD_SOURCES = new Set(["periodic_or_sum", "periodic_only"]);
 
 describe("integridade do registry", () => {
   it("ids únicos", () => {
@@ -45,6 +47,7 @@ describe("integridade do registry", () => {
       expect(m.visualizations.every((v) => VIS.has(v)), m.id).toBe(true);
       expect(typeof m.requiresEvent, m.id).toBe("boolean");
       expect(typeof m.isDerived, m.id).toBe("boolean");
+      expect(PERIOD_SOURCES.has(m.periodSource), m.id).toBe(true);
     }
   });
 
@@ -87,6 +90,25 @@ describe("integridade do registry", () => {
 
   it("`reach` não é somável (aggregation != sum)", () => {
     expect(getMetricDefinition("reach")?.aggregation).not.toBe("sum");
+  });
+
+  it("métricas não-aditivas no período exigem agregado periódico", () => {
+    for (const id of ["reach", "frequency", "video_avg_time_watched"]) {
+      expect(getMetricDefinition(id)?.periodSource, id).toBe("periodic_only");
+      expect(requiresPeriodicAggregate(id), id).toBe(true);
+    }
+    // aditivas somam os dias normalmente
+    for (const id of ["spend", "impressions", "clicks", "leads", "purchases"]) {
+      expect(getMetricDefinition(id)?.periodSource, id).toBe("periodic_or_sum");
+      expect(requiresPeriodicAggregate(id), id).toBe(false);
+    }
+  });
+
+  it("nenhuma métrica somável (aggregation sum) é marcada periodic_only", () => {
+    for (const m of METRIC_REGISTRY) {
+      if (m.periodSource !== "periodic_only") continue;
+      expect(m.aggregation, m.id).not.toBe("sum");
+    }
   });
 
   it("níveis honestos: métricas de vídeo não existem em account", () => {

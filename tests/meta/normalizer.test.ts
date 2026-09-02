@@ -49,20 +49,67 @@ describe("normalizeInsightRow", () => {
     expect(row.videoThruplays).toBe(3000);
   });
 
-  it("mapeia actions -> métricas Bernal e soma action_types equivalentes", () => {
+  it("resolve conversões Bernal por PRIORIDADE — sem somar aliases sobrepostos", () => {
     const row = normalizeInsightRow(rawAd, {
       level: "ad",
       adAccountId: "act_1234567890",
       attributionWindow: "7d_click_1d_view",
     })!;
-    // lead 48 (janela) + offsite lead 5 (sem janela -> value) = 53
-    expect(row.actions.leads).toBe(53);
+    // prioridade leads = [lead, offsite_conversion.fct.lead, ...] -> lead = 48
+    // (somar lead 48 + offsite 5 = 53 seria dupla contagem do MESMO evento)
+    expect(row.actions.leads).toBe(48);
     expect(row.actions.purchases).toBe(9); // janela 7d_click_1d_view
     expect(row.actions.link_clicks).toBe(1500);
     expect(row.actionValues.revenue).toBe(2900);
   });
 
-  it("action_type desconhecido vai para unmappedActions (não some)", () => {
+  it("preserva TODOS os action_types crus em rawActions/rawActionValues", () => {
+    const row = normalizeInsightRow(rawAd, {
+      level: "ad",
+      adAccountId: "act_1234567890",
+      attributionWindow: "7d_click_1d_view",
+    })!;
+    expect(row.rawActions).toEqual({
+      lead: 48,
+      "offsite_conversion.fct.lead": 5,
+      purchase: 9,
+      link_click: 1500,
+      some_new_event_2027: 3,
+      video_view: 0,
+    });
+    expect(row.rawActionValues).toEqual({ purchase: 2900 });
+  });
+
+  it("NÃO faz dupla contagem quando vários aliases de compra chegam juntos", () => {
+    const raw: MetaInsightRaw = {
+      date_start: "2026-08-03",
+      account_id: "1234567890",
+      spend: "500",
+      actions: [
+        { action_type: "omni_purchase", value: "8" },
+        { action_type: "purchase", value: "5" },
+        { action_type: "offsite_conversion.fct.purchase", value: "5" },
+      ],
+      action_values: [
+        { action_type: "omni_purchase", value: "800" },
+        { action_type: "purchase", value: "500" },
+      ],
+    };
+    const row = normalizeInsightRow(raw, {
+      level: "account",
+      adAccountId: "act_1234567890",
+    })!;
+    expect(row.actions.purchases).toBe(8); // omni_purchase (prioridade), não 18
+    expect(row.actionValues.revenue).toBe(800); // omni_purchase, não 1300
+    // nada se perde: os três aliases ficam no cru
+    expect(row.rawActions).toEqual({
+      omni_purchase: 8,
+      purchase: 5,
+      "offsite_conversion.fct.purchase": 5,
+    });
+  });
+
+  it("action_type desconhecido (não-zero) vai para unmappedActions", () => {
     const row = normalizeInsightRow(rawAd, {
       level: "ad",
       adAccountId: "act_1234567890",
@@ -74,23 +121,26 @@ describe("normalizeInsightRow", () => {
     expect(row.actions.some_new_event_2027).toBeUndefined();
   });
 
-  it("valor 0 não agrega (não inventa)", () => {
+  it("valor 0 não vira métrica nem entra no unmapped, mas fica no cru", () => {
     const row = normalizeInsightRow(rawAd, {
       level: "ad",
       adAccountId: "act_1234567890",
     })!;
-    // "video_view":"0" em actions[] foi ignorado
     expect(row.actions.video_view).toBeUndefined();
+    expect(
+      row.unmappedActions.some((u) => u.actionType === "video_view"),
+    ).toBe(false);
+    expect(row.rawActions.video_view).toBe(0);
   });
 
-  it("clientResultMetricType define o que soma em `results`", () => {
+  it("clientResultMetricType define a fonte de `results` (por prioridade)", () => {
     const asLeads = normalizeInsightRow(rawAd, {
       level: "ad",
       adAccountId: "act_1234567890",
       attributionWindow: "7d_click_1d_view",
       clientResultMetricType: "leads",
     })!;
-    expect(asLeads.actions.results).toBe(53); // = leads
+    expect(asLeads.actions.results).toBe(48); // = leads (prioridade `lead`)
 
     const asPurchases = normalizeInsightRow(rawAd, {
       level: "ad",
@@ -123,6 +173,7 @@ describe("normalizeInsightRow", () => {
     expect(row.frequency).toBeNull();
     expect(row.video3sViews).toBeNull();
     expect(row.actions).toEqual({});
+    expect(row.rawActions).toEqual({});
   });
 
   it("entityId conforme o nível", () => {

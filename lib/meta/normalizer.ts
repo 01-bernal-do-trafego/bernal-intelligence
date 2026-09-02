@@ -1,9 +1,10 @@
 import type { ResultMetricType } from "@/types/domain";
 import { META_DEFAULT_ATTRIBUTION_WINDOW } from "./config";
 import {
-  ACTION_TYPE_MAP,
-  ACTION_VALUE_TYPE_MAP,
-  RESULT_METRIC_ACTION_TYPES,
+  ACTION_METRIC_SPECS,
+  ACTION_VALUE_METRIC_SPECS,
+  resolveActionMetric,
+  resolveResultMetric,
 } from "./action-type-map";
 import { metaTimeToISODate, parseMetaInt, parseMetaNumber } from "./parse";
 import type {
@@ -15,8 +16,14 @@ import type {
 
 /**
  * Transforma UMA linha crua de insights da Meta em uma linha normalizada do
- * Bernal. Nada aqui inventa valores: ausência vira `null`; `action_type`s
- * desconhecidos vão para `unmappedActions` (auditoria), não somem.
+ * Bernal. Nada aqui inventa valores: ausência vira `null`.
+ *
+ * ── ANTI DUPLA CONTAGEM ──────────────────────────────────────────────────
+ * `rawActions` / `rawActionValues` preservam TODOS os `action_type` recebidos
+ * (valor já resolvido para a janela de atribuição). As métricas Bernal em
+ * `actions` / `actionValues` são derivadas por PRIORIDADE/fallback (ver
+ * `action-type-map.ts`) — nunca somando aliases sobrepostos. Assim o total do
+ * Bernal bate com o Ads Manager dentro das regras de atribuição configuradas.
  *
  * `Meta response → Normalizer → Metric Registry → Dashboard`.
  */
@@ -26,13 +33,32 @@ export interface NormalizeOptions {
   adAccountId: string; // "act_123..."
   attributionWindow?: string;
   currency?: string | null;
-  /** Tipo de resultado configurado do cliente — define quais actions somam em `results`. */
+  /** Tipo de resultado configurado do cliente — define a fonte de `results`. */
   clientResultMetricType?: ResultMetricType;
 }
 
-function pickWindowValue(action: MetaActionRaw, attributionWindow: string): number {
+function pickWindowValue(
+  action: MetaActionRaw,
+  attributionWindow: string,
+): number {
   const raw = action[attributionWindow] ?? action.value;
   return parseMetaNumber(raw) ?? 0;
+}
+
+/**
+ * `{ action_type -> valor resolvido para a janela }`. Preserva TODOS os
+ * `action_type` — inclusive os com valor 0 (zero medido é dado legítimo).
+ */
+function collectRawActions(
+  actions: MetaActionRaw[] | undefined,
+  attributionWindow: string,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const action of actions ?? []) {
+    if (!action?.action_type) continue;
+    out.set(action.action_type, pickWindowValue(action, attributionWindow));
+  }
+  return out;
 }
 
 function firstActionValue(actions: MetaActionRaw[] | undefined): number | null {
@@ -57,6 +83,10 @@ function entityIdForLevel(
   }
 }
 
+const CLAIMED_ACTION_TYPES = new Set<string>(
+  ACTION_METRIC_SPECS.flatMap((s) => [...s.actionTypes]),
+);
+
 export function normalizeInsightRow(
   raw: MetaInsightRaw,
   opts: NormalizeOptions,
@@ -70,40 +100,40 @@ export function normalizeInsightRow(
   const attributionWindow =
     opts.attributionWindow ?? META_DEFAULT_ATTRIBUTION_WINDOW;
 
-  const actions: Record<string, number> = {};
-  const actionValues: Record<string, number> = {};
-  const unmappedActions: { actionType: string; value: number }[] = [];
-
-  const resultActionTypes = new Set(
-    opts.clientResultMetricType
-      ? (RESULT_METRIC_ACTION_TYPES[opts.clientResultMetricType] ?? [])
-      : [],
+  // 1. Preserva tudo o que a Meta mandou (resolvido para a janela).
+  const rawActions = collectRawActions(raw.actions, attributionWindow);
+  const rawActionValues = collectRawActions(
+    raw.action_values,
+    attributionWindow,
   );
 
-  for (const action of raw.actions ?? []) {
-    const value = pickWindowValue(action, attributionWindow);
-    if (value === 0) continue;
-
-    const metricId = ACTION_TYPE_MAP[action.action_type];
-    if (metricId) {
-      actions[metricId] = (actions[metricId] ?? 0) + value;
-    } else {
-      unmappedActions.push({ actionType: action.action_type, value });
-    }
-
-    if (resultActionTypes.has(action.action_type)) {
-      actions.results = (actions.results ?? 0) + value;
-    }
+  // 2. Métricas Bernal por PRIORIDADE/fallback — sem somar aliases sobrepostos.
+  const actions: Record<string, number> = {};
+  for (const spec of ACTION_METRIC_SPECS) {
+    const value = resolveActionMetric(spec.actionTypes, rawActions, spec.combine);
+    if (value !== null) actions[spec.metricId] = value;
   }
 
-  for (const actionValue of raw.action_values ?? []) {
-    const value = pickWindowValue(actionValue, attributionWindow);
-    if (value === 0) continue;
-    const valueMetricId = ACTION_VALUE_TYPE_MAP[actionValue.action_type];
-    if (valueMetricId) {
-      actionValues[valueMetricId] = (actionValues[valueMetricId] ?? 0) + value;
-    }
+  const actionValues: Record<string, number> = {};
+  for (const spec of ACTION_VALUE_METRIC_SPECS) {
+    const value = resolveActionMetric(
+      spec.actionTypes,
+      rawActionValues,
+      spec.combine,
+    );
+    if (value !== null) actionValues[spec.metricId] = value;
   }
+
+  // 3. Resultado principal do cliente (também por prioridade).
+  if (opts.clientResultMetricType) {
+    const result = resolveResultMetric(opts.clientResultMetricType, rawActions);
+    if (result !== null) actions.results = result;
+  }
+
+  // 4. Auditoria: `action_type`s crus (não-zero) que nenhum spec reivindica.
+  const unmappedActions = [...rawActions.entries()]
+    .filter(([actionType, value]) => value !== 0 && !CLAIMED_ACTION_TYPES.has(actionType))
+    .map(([actionType, value]) => ({ actionType, value }));
 
   return {
     level: opts.level,
@@ -122,7 +152,9 @@ export function normalizeInsightRow(
     clicks: parseMetaInt(raw.clicks),
     inlineLinkClicks: parseMetaInt(raw.inline_link_clicks),
     frequency: parseMetaNumber(raw.frequency),
-    video3sViews: parseMetaInt(firstActionValue(raw.video_3_sec_watched_actions)),
+    video3sViews: parseMetaInt(
+      firstActionValue(raw.video_3_sec_watched_actions),
+    ),
     videoThruplays: parseMetaInt(
       firstActionValue(raw.video_thruplay_watched_actions),
     ),
@@ -130,6 +162,8 @@ export function normalizeInsightRow(
 
     actions,
     actionValues,
+    rawActions: Object.fromEntries(rawActions),
+    rawActionValues: Object.fromEntries(rawActionValues),
     unmappedActions,
   };
 }

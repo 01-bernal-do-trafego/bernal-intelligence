@@ -61,6 +61,22 @@ export interface MetricFormula {
 
 export type DashboardSurface = "card" | "chart" | "table" | "creative_table";
 
+/**
+ * Como obter o valor da métrica para um PERÍODO (card / total), não para um dia.
+ *
+ *  - `periodic_or_sum`: o total do período pode vir da soma das linhas diárias
+ *    (`meta_insights_daily`) — métrica aditiva (spend, impressions, clicks,
+ *    conversões...). Também pode vir de `meta_insights_periodic` (idêntico).
+ *
+ *  - `periodic_only`: NÃO pode ser obtida somando dias. Precisa vir de
+ *    `meta_insights_periodic` (uma consulta agregada à Meta, sem
+ *    `time_increment`, com as MESMAS regras do Ads Manager). Ex.: `reach`
+ *    (pessoas únicas — a mesma pessoa em 2 dias conta 1 no período) e
+ *    `frequency` (depende do reach do período). No gráfico temporal a versão
+ *    diária continua válida ponto a ponto.
+ */
+export type MetricPeriodSource = "periodic_or_sum" | "periodic_only";
+
 export interface MetricDefinition {
   id: string;
   label: string;
@@ -71,6 +87,8 @@ export interface MetricDefinition {
   behavior: MetricBehavior;
   /** Como agregar no tempo/entidades. `ratio` = num/den sobre totais brutos. */
   aggregation: "sum" | "ratio" | "weighted_avg" | "last" | "max";
+  /** De onde vem o total de um PERÍODO (card). Ver `MetricPeriodSource`. */
+  periodSource: MetricPeriodSource;
   levels: readonly MetricLevel[];
   visualizations: readonly MetricVisualization[];
   availability: MetricAvailability;
@@ -140,6 +158,7 @@ function column(
     format,
     behavior,
     aggregation: "sum",
+    periodSource: "periodic_or_sum",
     levels: ALL_LEVELS,
     visualizations: TS_VIS,
     availability: "stable",
@@ -164,6 +183,7 @@ function conversion(
     format: "number",
     behavior: "higher_is_better",
     aggregation: "sum",
+    periodSource: "periodic_or_sum",
     levels: ALL_LEVELS,
     visualizations: TS_VIS,
     availability: "depends_on_account",
@@ -191,6 +211,7 @@ function formula(
     format,
     behavior,
     aggregation: "ratio",
+    periodSource: "periodic_or_sum",
     levels: ALL_LEVELS,
     visualizations: TS_VIS,
     availability: "stable",
@@ -209,12 +230,12 @@ const DEFINITIONS: readonly MetricDefinition[] = [
   // ---- meta_native: colunas fixas ----
   column("spend", "Investimento", "Valor gasto no período, na moeda da conta.", "currency", "neutral", { dashboardSurfaces: CARD_CHART }),
   column("impressions", "Impressões", "Vezes que os anúncios foram exibidos.", "number", "higher_is_better", { dashboardSurfaces: CARD_CHART }),
-  column("reach", "Alcance", "Pessoas únicas alcançadas. Não é somável por dia — o total do período vem de consulta agregada.", "number", "higher_is_better", { aggregation: "last", dashboardSurfaces: CARD_CHART }),
+  column("reach", "Alcance", "Pessoas únicas alcançadas. Não é somável por dia — o total do período vem de consulta agregada.", "number", "higher_is_better", { aggregation: "last", periodSource: "periodic_only", dashboardSurfaces: CARD_CHART }),
   column("clicks", "Cliques", "Todos os cliques (inclui reações, comentários etc.).", "number", "higher_is_better", { dashboardSurfaces: CARD_CHART }),
   column("inline_link_clicks", "Cliques no link", "Cliques que levaram ao destino do anúncio.", "number", "higher_is_better"),
   column("video_3s_views", "Reproduções de 3s", "Reproduções de vídeo de pelo menos 3 segundos.", "number", "higher_is_better", { levels: AD_DOWN_LEVELS, availability: "depends_on_account" }),
   column("video_thruplays", "ThruPlays", "Reproduções completas ou de pelo menos 15 segundos.", "number", "higher_is_better", { levels: AD_DOWN_LEVELS, availability: "depends_on_account" }),
-  column("video_avg_time_watched", "Tempo médio assistido", "Segundos médios de vídeo assistidos.", "decimal", "higher_is_better", { aggregation: "weighted_avg", levels: AD_DOWN_LEVELS, availability: "depends_on_account" }),
+  column("video_avg_time_watched", "Tempo médio assistido", "Segundos médios de vídeo assistidos.", "decimal", "higher_is_better", { aggregation: "weighted_avg", periodSource: "periodic_only", levels: AD_DOWN_LEVELS, availability: "depends_on_account" }),
 
   // ---- meta_native: conversões (actions[]) ----
   {
@@ -227,6 +248,7 @@ const DEFINITIONS: readonly MetricDefinition[] = [
     format: "number",
     behavior: "higher_is_better",
     aggregation: "sum",
+    periodSource: "periodic_or_sum",
     levels: ALL_LEVELS,
     visualizations: TS_VIS,
     availability: "depends_on_account",
@@ -251,12 +273,13 @@ const DEFINITIONS: readonly MetricDefinition[] = [
     category: "meta_native",
     source: {
       kind: "action",
-      actionType: ["purchase", "omni_purchase"],
+      actionType: ["omni_purchase", "purchase", "offsite_conversion.fct.purchase"],
       valueKind: "value",
     },
     format: "currency",
     behavior: "higher_is_better",
     aggregation: "sum",
+    periodSource: "periodic_or_sum",
     levels: ALL_LEVELS,
     visualizations: TS_VIS,
     availability: "depends_on_account",
@@ -271,7 +294,7 @@ const DEFINITIONS: readonly MetricDefinition[] = [
   formula("cpc", "CPC", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "clicks" }, { dashboardSurfaces: CARD_CHART }),
   formula("cpc_link", "CPC (link)", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "inline_link_clicks" }),
   formula("cpm", "CPM", "currency", "neutral", { op: "ratio", numerator: "spend", denominator: "impressions", multiplier: 1000 }, { dashboardSurfaces: CARD_CHART }),
-  formula("frequency", "Frequência", "decimal", "neutral", { op: "ratio", numerator: "impressions", denominator: "reach" }, { dashboardSurfaces: CARD_CHART }),
+  formula("frequency", "Frequência", "decimal", "neutral", { op: "ratio", numerator: "impressions", denominator: "reach" }, { periodSource: "periodic_only", dashboardSurfaces: CARD_CHART }),
   formula("cost_per_result", "Custo por resultado", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "results" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true }),
   formula("cpl", "Custo por lead", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "leads" }, { availability: "depends_on_account", requiresEvent: true }),
   formula("cpa", "CPA", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "purchases" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true }),
@@ -290,6 +313,7 @@ const DEFINITIONS: readonly MetricDefinition[] = [
     format: "decimal",
     behavior: "contextual",
     aggregation: "last",
+    periodSource: "periodic_or_sum",
     levels: ALL_LEVELS,
     visualizations: TS_VIS,
     availability: "bernal_planned",
@@ -337,4 +361,18 @@ export function isMetricCompatibleWithVisualization(
   visualization: MetricVisualization,
 ): boolean {
   return getMetricDefinition(id)?.visualizations.includes(visualization) ?? false;
+}
+
+/**
+ * `true` quando o total do período NÃO pode ser obtido somando as linhas
+ * diárias — precisa vir de `meta_insights_periodic` (ex.: `reach`, `frequency`,
+ * `video_avg_time_watched`). Cards/totais devem checar isto antes de somar.
+ */
+export function requiresPeriodicAggregate(id: string): boolean {
+  return getMetricDefinition(id)?.periodSource === "periodic_only";
+}
+
+/** `true` quando a métrica é aditiva no tempo (pode somar dias). */
+export function isMetricAdditive(id: string): boolean {
+  return getMetricDefinition(id)?.aggregation === "sum";
 }

@@ -170,10 +170,18 @@ export interface NormalizedInsightRow {
   videoThruplays: number | null;
   videoAvgTimeWatched: number | null;
 
-  /** id de métrica Bernal -> contagem somada. */
+  /** id de métrica Bernal -> valor resolvido por PRIORIDADE (sem somar aliases). */
   actions: Record<string, number>;
-  /** id de métrica de valor Bernal -> valor somado. */
+  /** id de métrica de valor Bernal -> valor resolvido por PRIORIDADE. */
   actionValues: Record<string, number>;
-  /** `action_type`s da Meta que ainda não mapeamos (auditoria). */
+  /**
+   * TODOS os `action_type` crus recebidos (valor já na janela de atribuição).
+   * Fonte de verdade para reconciliar com o Ads Manager e derivar métricas
+   * novas sem re-sync. Persistido em `meta_insights_*.raw_actions`.
+   */
+  rawActions: Record<string, number>;
+  /** TODOS os `action_type` de valor crus. Persistido em `raw_action_values`. */
+  rawActionValues: Record<string, number>;
+  /** `action_type`s da Meta (não-zero) que ainda não mapeamos (auditoria). */
   unmappedActions: { actionType: string; value: number }[];
 }
