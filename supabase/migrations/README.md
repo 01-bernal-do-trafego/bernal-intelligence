@@ -6,7 +6,9 @@ Migrations SQL versionadas do banco (Supabase / PostgreSQL).
 
 | Arquivo | Descrição | Aplicada? |
 | --- | --- | --- |
-| `20260901120000_phase2_foundation.sql` | Fase 2 — profiles, clients, client_users, dashboard_configs + RLS | **NÃO** |
+| `20260901120000_phase2_foundation.sql` | Fase 2 — profiles, clients, client_users, dashboard_configs + RLS | Sim |
+| `20260902130000_meta_integration.sql` | META 1 — 11 tabelas `meta_*` + RLS | Sim |
+| `20260902140000_meta_oauth.sql` | META 2 — RPC `meta_oauth_upsert_connection` (grava conexão + token cifrado numa transação) | **NÃO** |
 
 ## Como aplicar (quando autorizado)
 

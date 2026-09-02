@@ -2,6 +2,11 @@ import { Clock } from "lucide-react";
 import { Badge, type BadgeTone } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
 import {
+  META_UI_LABEL,
+  META_UI_TONE,
+  type MetaUiState,
+} from "@/lib/meta/connection-state";
+import {
   CAMPAIGN_STATUS_LABEL,
   CLIENT_STATUS_LABEL,
   META_STATUS_LABEL,
@@ -42,6 +47,19 @@ export function MetaStatusBadge({ status }: { status: MetaConnectionStatus }) {
   return (
     <Badge tone={META_TONE[status]} dot>
       {META_STATUS_LABEL[status]}
+    </Badge>
+  );
+}
+
+/**
+ * Badge da conexão Meta com os estados reais da integração
+ * (não conectado / conectando / conectado / expirando / expirado /
+ * revogado / reconexão / erro).
+ */
+export function MetaConnectionBadge({ state }: { state: MetaUiState }) {
+  return (
+    <Badge tone={META_UI_TONE[state]} dot>
+      {META_UI_LABEL[state]}
     </Badge>
   );
 }

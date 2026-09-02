@@ -18,12 +18,18 @@ import {
   enabledKeys,
 } from "@/lib/dashboard-config";
 import { getClientRecord } from "@/server/clients";
+import { getMetaConnection } from "@/server/meta-connection";
 import {
   getClientDashboard,
   type DashboardMetric,
   type MetricKey,
 } from "@/server/client-dashboard";
-import { ClientStatusBadge, MetaStatusBadge } from "@/components/shared/status-badges";
+import { describeCallbackReason } from "@/lib/meta/oauth-errors";
+import {
+  ClientStatusBadge,
+  MetaConnectionBadge,
+} from "@/components/shared/status-badges";
+import { ConnectMetaButton } from "@/components/clients/connect-meta-button";
 import { EditClientButton } from "@/components/clients/edit-client-dialog";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { MetricCard, type MetricDelta } from "@/components/ui/metric-card";
@@ -42,6 +48,8 @@ interface ClientDashboardPageProps {
     account?: string;
     campaign?: string;
     created?: string;
+    meta?: string;
+    reason?: string;
   }>;
 }
 
@@ -89,6 +97,8 @@ export default async function ClientDashboardPage({
   const client = await getClientRecord(id);
   if (!client) notFound();
 
+  const metaConnection = await getMetaConnection(client.id);
+
   const compare = sp.compare === "1";
   const dashboard = await getClientDashboard({
     client,
@@ -121,6 +131,18 @@ export default async function ClientDashboardPage({
           </div>
         )}
 
+        {sp.meta === "connected" && (
+          <div className="rounded-lg border border-positive/30 bg-positive/10 px-4 py-2 text-sm text-positive">
+            Meta Ads conectada com sucesso.
+          </div>
+        )}
+
+        {sp.meta === "error" && (
+          <div className="rounded-lg border border-negative/30 bg-negative/10 px-4 py-2 text-sm text-negative">
+            {describeCallbackReason(sp.reason)}
+          </div>
+        )}
+
         <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <div className="flex flex-wrap items-center gap-2">
@@ -132,10 +154,11 @@ export default async function ClientDashboardPage({
             <div className="mt-1 flex items-center gap-2 text-sm text-muted">
               <span>Meta Ads</span>
               <span aria-hidden>·</span>
-              <MetaStatusBadge status="not_connected" />
+              <MetaConnectionBadge state={metaConnection.state} />
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <ConnectMetaButton clientId={client.id} state={metaConnection.state} />
             <EditClientButton client={client} />
             <DashboardHeaderActions clientId={client.id} config={config} />
           </div>
