@@ -86,25 +86,33 @@ export function ClientsTable({ rows }: ClientsTableProps) {
       header: "",
       align: "right",
       render: (row) => (
-        <Dropdown
-          align="end"
-          trigger={
-            <span className="inline-flex rounded-md p-1.5 text-muted hover:bg-surface-elevated hover:text-foreground">
-              <MoreHorizontal className="size-4" />
-            </span>
-          }
+        // A célula de ações não pode disparar o onClick da linha (abrir o
+        // dashboard). stopPropagation aqui contém o clique do "..." e de todos
+        // os itens do menu, sem tocar o DataTable/Dropdown compartilhados.
+        <div
+          className="flex justify-end"
+          onClick={(e) => e.stopPropagation()}
         >
-          <DropdownItem onSelect={() => router.push(`/clients/${row.id}`)}>
-            Abrir cliente
-          </DropdownItem>
-          <DropdownSeparator />
-          <DropdownItem onSelect={() => setEditing(row)}>Editar</DropdownItem>
-          {row.status !== "archived" && (
-            <DropdownItem tone="danger" onSelect={() => setArchiving(row)}>
-              Arquivar
+          <Dropdown
+            align="end"
+            trigger={
+              <span className="inline-flex rounded-md p-1.5 text-muted hover:bg-surface-elevated hover:text-foreground">
+                <MoreHorizontal className="size-4" />
+              </span>
+            }
+          >
+            <DropdownItem onSelect={() => router.push(`/clients/${row.id}`)}>
+              Abrir cliente
             </DropdownItem>
-          )}
-        </Dropdown>
+            <DropdownSeparator />
+            <DropdownItem onSelect={() => setEditing(row)}>Editar</DropdownItem>
+            {row.status !== "archived" && (
+              <DropdownItem tone="danger" onSelect={() => setArchiving(row)}>
+                Arquivar
+              </DropdownItem>
+            )}
+          </Dropdown>
+        </div>
       ),
     },
   ];
