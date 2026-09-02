@@ -3,21 +3,20 @@ import { RESULT_METRIC_PRESETS } from "@/lib/result-metric";
 import type { ResultMetricConfig, ResultMetricType } from "@/types/domain";
 
 /**
- * Configuração de dashboard por cliente — o que é salvo em
- * `public.dashboard_configs` (colunas `result_metric` e `layout`).
+ * Configuração de dashboard por cliente — salva em `public.dashboard_configs`
+ * (colunas `result_metric` e `layout`).
  *
- * Regras centrais:
- * - toda `key` de card/gráfico/coluna vem de um catálogo fechado;
- * - a ordem é a ordem do array; `enabled` liga/desliga;
- * - a coluna "Campanha" é obrigatória (sempre presente, ativa e primeira);
- * - métricas `requiresMeta` (dependem da integração Meta) nunca ficam ativas.
+ * `layout` está na **version 2**: cards e colunas continuam como listas
+ * `{ key, enabled }`; gráficos evoluíram para objetos genéricos
+ * `{ id, metric, visualization, title, enabled }` (ordem = posição no array).
+ * Configurações antigas (version 1, ou sem version) são migradas na leitura.
  *
- * NADA aqui é específico de um cliente: A pode mostrar Leads/CPL, B Compras/CPA.
+ * NADA aqui é específico de um cliente.
  */
 
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 /* Métrica principal                                                   */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
 export const RESULT_METRIC_TYPES: readonly ResultMetricType[] = [
   "leads",
@@ -56,14 +55,142 @@ export const METRIC_BEHAVIOR_LABEL: Record<MetricBehavior, string> = {
 const RESULT_METRIC_TYPE_SET = new Set<string>(RESULT_METRIC_TYPES);
 const METRIC_BEHAVIOR_SET = new Set<string>(METRIC_BEHAVIORS);
 
-/* ------------------------------------------------------------------ */
-/* Catálogos (conjuntos fechados)                                      */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* Catálogo de métricas de gráfico                                     */
+/* ================================================================== */
+
+export type ChartContext = "time_series" | "category" | "composition";
+
+export type ChartMetricFormat = "currency" | "number" | "percent" | "decimal";
+
+export interface ChartMetricEntry {
+  key: string;
+  label: string;
+  context: ChartContext;
+  format: ChartMetricFormat;
+  behavior: MetricBehavior;
+  /** "results" segue o comportamento configurado da métrica principal. */
+  usesResultMetricBehavior?: boolean;
+  /** Sem fonte de dados até a integração Meta Ads. */
+  requiresMeta?: boolean;
+  /** Chave da série diária em ClientDashboardData.series (quando há fonte). */
+  seriesKey?: string;
+}
+
+export const CHART_METRIC_CATALOG: readonly ChartMetricEntry[] = [
+  { key: "spend", label: "Investimento", context: "time_series", format: "currency", behavior: "neutral", seriesKey: "spend" },
+  { key: "results", label: "Resultados", context: "time_series", format: "number", behavior: "higher_is_better", usesResultMetricBehavior: true, seriesKey: "results" },
+  { key: "cost_per_result", label: "Custo por resultado", context: "time_series", format: "currency", behavior: "lower_is_better", seriesKey: "cost_per_result" },
+  { key: "reach", label: "Alcance", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "reach" },
+  { key: "impressions", label: "Impressões", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "impressions" },
+  { key: "clicks", label: "Cliques", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "clicks" },
+  { key: "ctr", label: "CTR", context: "time_series", format: "percent", behavior: "higher_is_better", seriesKey: "ctr" },
+  { key: "cpc", label: "CPC", context: "time_series", format: "currency", behavior: "lower_is_better", seriesKey: "cpc" },
+  { key: "cpm", label: "CPM", context: "time_series", format: "currency", behavior: "neutral", seriesKey: "cpm" },
+  { key: "frequency", label: "Frequência", context: "time_series", format: "decimal", behavior: "neutral", seriesKey: "frequency" },
+  // Dependentes da futura integração Meta Ads (sem fonte por enquanto):
+  { key: "purchases", label: "Compras", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
+  { key: "cpa", label: "CPA", context: "time_series", format: "currency", behavior: "lower_is_better", requiresMeta: true },
+  { key: "revenue", label: "Receita", context: "time_series", format: "currency", behavior: "higher_is_better", requiresMeta: true },
+  { key: "roas", label: "ROAS", context: "time_series", format: "decimal", behavior: "higher_is_better", requiresMeta: true },
+  { key: "conversations", label: "Conversas", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
+  { key: "cost_per_conversation", label: "Custo por conversa", context: "time_series", format: "currency", behavior: "lower_is_better", requiresMeta: true },
+];
+
+const CHART_METRIC_BY_KEY = new Map(CHART_METRIC_CATALOG.map((m) => [m.key, m]));
+
+export function chartMetricEntry(key: string): ChartMetricEntry | undefined {
+  return CHART_METRIC_BY_KEY.get(key);
+}
+
+export function chartMetricLabel(key: string): string {
+  return CHART_METRIC_BY_KEY.get(key)?.label ?? key;
+}
+
+/** Métricas que já têm fonte de dados (selecionáveis no editor). */
+export const AVAILABLE_CHART_METRICS = CHART_METRIC_CATALOG.filter(
+  (m) => !m.requiresMeta,
+);
+
+/* ================================================================== */
+/* Catálogo de visualizações + compatibilidade                         */
+/* ================================================================== */
+
+export type VisualizationType =
+  | "line"
+  | "area"
+  | "bar"
+  | "horizontal_bar"
+  | "stacked_bar"
+  | "combo"
+  | "pie"
+  | "donut";
+
+export interface VisualizationEntry {
+  key: VisualizationType;
+  label: string;
+  /** Contextos de dados onde a visualização faz sentido. */
+  contexts: ChartContext[];
+  /** Já renderizável com Recharts nesta fase. */
+  implemented: boolean;
+}
+
+export const VISUALIZATION_CATALOG: readonly VisualizationEntry[] = [
+  { key: "line", label: "Linha", contexts: ["time_series"], implemented: true },
+  { key: "area", label: "Área", contexts: ["time_series"], implemented: true },
+  { key: "bar", label: "Barras verticais", contexts: ["time_series", "category"], implemented: true },
+  { key: "horizontal_bar", label: "Barras horizontais", contexts: ["category"], implemented: true },
+  // Futuras — arquitetura preparada, ainda não implementadas:
+  { key: "stacked_bar", label: "Barras empilhadas", contexts: ["category", "composition"], implemented: false },
+  { key: "combo", label: "Combinado", contexts: ["time_series"], implemented: false },
+  { key: "pie", label: "Pizza", contexts: ["composition"], implemented: false },
+  { key: "donut", label: "Rosca", contexts: ["composition"], implemented: false },
+];
+
+const VISUALIZATION_BY_KEY = new Map(
+  VISUALIZATION_CATALOG.map((v) => [v.key, v]),
+);
+
+export function visualizationLabel(key: string): string {
+  return VISUALIZATION_BY_KEY.get(key as VisualizationType)?.label ?? key;
+}
+
+/** Visualizações compatíveis e já implementadas para uma métrica. */
+export function compatibleVisualizations(metricKey: string): VisualizationType[] {
+  const metric = CHART_METRIC_BY_KEY.get(metricKey);
+  if (!metric) return [];
+  return VISUALIZATION_CATALOG.filter(
+    (v) => v.implemented && v.contexts.includes(metric.context),
+  ).map((v) => v.key);
+}
+
+/** Métrica + visualização formam uma combinação válida (com fonte de dados)? */
+export function isChartCombinationValid(
+  metricKey: string,
+  visualization: string,
+): boolean {
+  const metric = CHART_METRIC_BY_KEY.get(metricKey);
+  const viz = VISUALIZATION_BY_KEY.get(visualization as VisualizationType);
+  if (!metric || !viz || !viz.implemented) return false;
+  if (metric.requiresMeta) return false;
+  return viz.contexts.includes(metric.context);
+}
+
+export function defaultChartTitle(metricKey: string): string {
+  const metric = CHART_METRIC_BY_KEY.get(metricKey);
+  if (!metric) return "Gráfico";
+  return metric.context === "time_series"
+    ? `${metric.label} ao longo do tempo`
+    : metric.label;
+}
+
+/* ================================================================== */
+/* Catálogos de cards e colunas (inalterados)                          */
+/* ================================================================== */
 
 export interface CatalogEntry {
   key: string;
   label: string;
-  /** Depende da integração com a Meta Ads — não pode ser ativado ainda. */
   requiresMeta?: boolean;
 }
 
@@ -86,18 +213,6 @@ export const CARD_CATALOG: readonly CatalogEntry[] = [
   { key: "cost_per_conversation", label: "Custo por conversa", requiresMeta: true },
 ];
 
-export const CHART_CATALOG: readonly CatalogEntry[] = [
-  { key: "results_over_time", label: "Resultados ao longo do tempo" },
-  { key: "investment_over_time", label: "Investimento ao longo do tempo" },
-  { key: "cost_per_result_over_time", label: "Custo por resultado" },
-  { key: "reach_over_time", label: "Alcance" },
-  { key: "impressions_over_time", label: "Impressões" },
-  { key: "clicks_over_time", label: "Cliques" },
-  { key: "ctr_over_time", label: "CTR" },
-  { key: "cpc_over_time", label: "CPC" },
-  { key: "cpm_over_time", label: "CPM" },
-];
-
 export const TABLE_COLUMN_CATALOG: readonly CatalogEntry[] = [
   { key: "campaign", label: "Campanha" },
   { key: "status", label: "Status" },
@@ -115,22 +230,29 @@ export const TABLE_COLUMN_CATALOG: readonly CatalogEntry[] = [
 export const REQUIRED_TABLE_COLUMN = "campaign";
 
 const CARD_KEYS = new Map(CARD_CATALOG.map((c) => [c.key, c]));
-const CHART_KEYS = new Map(CHART_CATALOG.map((c) => [c.key, c]));
 const COLUMN_KEYS = new Map(TABLE_COLUMN_CATALOG.map((c) => [c.key, c]));
 
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 /* Shape                                                               */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
 export interface LayoutItem {
   key: string;
   enabled: boolean;
 }
 
+export interface ChartConfig {
+  id: string;
+  metric: string;
+  visualization: VisualizationType;
+  title: string;
+  enabled: boolean;
+}
+
 export interface DashboardLayout {
-  version: 1;
+  version: 2;
   cards: LayoutItem[];
-  charts: LayoutItem[];
+  charts: ChartConfig[];
   tableColumns: LayoutItem[];
 }
 
@@ -139,21 +261,13 @@ export interface DashboardConfigValue {
   layout: DashboardLayout;
 }
 
-/* ------------------------------------------------------------------ */
-/* Configuração padrão segura                                          */
-/* ------------------------------------------------------------------ */
+export const MAX_CHARTS = 12;
 
-const DEFAULT_ENABLED_CARDS = [
-  "investment",
-  "results",
-  "cost_per_result",
-  "reach",
-];
-const DEFAULT_ENABLED_CHARTS = [
-  "results_over_time",
-  "investment_over_time",
-  "cost_per_result_over_time",
-];
+/* ================================================================== */
+/* Configuração padrão segura                                          */
+/* ================================================================== */
+
+const DEFAULT_ENABLED_CARDS = ["investment", "results", "cost_per_result", "reach"];
 const DEFAULT_ENABLED_COLUMNS = [
   "campaign",
   "investment",
@@ -164,7 +278,16 @@ const DEFAULT_ENABLED_COLUMNS = [
   "status",
 ];
 
-/** Monta a lista: ativas na ordem dada, depois o resto do catálogo desativado. */
+const DEFAULT_CHARTS: readonly ChartConfig[] = [
+  { id: "chart_results", metric: "results", visualization: "area", title: "Resultados ao longo do tempo", enabled: true },
+  { id: "chart_spend", metric: "spend", visualization: "area", title: "Investimento ao longo do tempo", enabled: true },
+  { id: "chart_cpr", metric: "cost_per_result", visualization: "line", title: "Custo por resultado", enabled: true },
+];
+
+function cloneDefaultCharts(): ChartConfig[] {
+  return DEFAULT_CHARTS.map((c) => ({ ...c }));
+}
+
 function buildList(
   catalog: readonly CatalogEntry[],
   enabledInOrder: readonly string[],
@@ -172,7 +295,6 @@ function buildList(
   const catalogKeys = new Set(catalog.map((c) => c.key));
   const seen = new Set<string>();
   const items: LayoutItem[] = [];
-
   for (const key of enabledInOrder) {
     const entry = catalog.find((c) => c.key === key);
     if (!entry || seen.has(key) || entry.requiresMeta) continue;
@@ -191,16 +313,16 @@ function buildList(
 export const DEFAULT_DASHBOARD_CONFIG: DashboardConfigValue = {
   resultMetric: RESULT_METRIC_PRESETS.results,
   layout: {
-    version: 1,
+    version: 2,
     cards: buildList(CARD_CATALOG, DEFAULT_ENABLED_CARDS),
-    charts: buildList(CHART_CATALOG, DEFAULT_ENABLED_CHARTS),
+    charts: cloneDefaultCharts(),
     tableColumns: buildList(TABLE_COLUMN_CATALOG, DEFAULT_ENABLED_COLUMNS),
   },
 };
 
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 /* Normalização de partes                                              */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -263,7 +385,6 @@ function normalizeList(
     }
   }
 
-  // Fallback quando não veio nada aproveitável.
   const enabledInOrder =
     requestedOrder.length > 0
       ? requestedOrder.filter((k) => enabledSet.has(k))
@@ -271,7 +392,6 @@ function normalizeList(
 
   let items = buildList(catalog, enabledInOrder);
 
-  // Reordena a parte desativada seguindo a ordem pedida (quando houver).
   if (requestedOrder.length > 0) {
     const rank = new Map(requestedOrder.map((k, i) => [k, i]));
     items = [...items].sort((a, b) => {
@@ -282,7 +402,6 @@ function normalizeList(
     });
   }
 
-  // Coluna obrigatória: sempre presente, ativa e primeira.
   if (options.requiredKey) {
     const key = options.requiredKey;
     items = items.filter((i) => i.key !== key);
@@ -292,9 +411,107 @@ function normalizeList(
   return items;
 }
 
-/* ------------------------------------------------------------------ */
-/* Leitura leniente (nunca lança)                                      */
-/* ------------------------------------------------------------------ */
+/* ---------------- gráficos: migração v1 e normalização v2 ---------- */
+
+const V1_CHART_MIGRATION: Record<
+  string,
+  { metric: string; visualization: VisualizationType }
+> = {
+  results_over_time: { metric: "results", visualization: "area" },
+  investment_over_time: { metric: "spend", visualization: "area" },
+  cost_per_result_over_time: { metric: "cost_per_result", visualization: "line" },
+  reach_over_time: { metric: "reach", visualization: "area" },
+  impressions_over_time: { metric: "impressions", visualization: "area" },
+  clicks_over_time: { metric: "clicks", visualization: "area" },
+  ctr_over_time: { metric: "ctr", visualization: "line" },
+  cpc_over_time: { metric: "cpc", visualization: "line" },
+  cpm_over_time: { metric: "cpm", visualization: "line" },
+};
+
+function migratedV1Title(
+  key: string,
+  metricKey: string,
+  resultMetric: ResultMetricConfig,
+): string {
+  if (key === "results_over_time")
+    return `${resultMetric.resultLabel} ao longo do tempo`;
+  if (key === "cost_per_result_over_time") return resultMetric.costLabel;
+  return defaultChartTitle(metricKey);
+}
+
+/** version 1 (charts como { key, enabled }) -> ChartConfig[] preservando ordem. */
+function migrateV1Charts(
+  raw: unknown,
+  resultMetric: ResultMetricConfig,
+): ChartConfig[] {
+  if (!Array.isArray(raw)) return cloneDefaultCharts();
+  const out: ChartConfig[] = [];
+  const seenIds = new Set<string>();
+  for (const entry of raw) {
+    const rec = asRecord(entry);
+    const key = typeof rec?.key === "string" ? rec.key : "";
+    const mapping = V1_CHART_MIGRATION[key];
+    if (!mapping || rec?.enabled !== true) continue; // só o que estava visível
+    let id = key;
+    if (seenIds.has(id)) id = `chart_${out.length}`;
+    seenIds.add(id);
+    out.push({
+      id,
+      metric: mapping.metric,
+      visualization: mapping.visualization,
+      title: migratedV1Title(key, mapping.metric, resultMetric),
+      enabled: true,
+    });
+  }
+  return out;
+}
+
+/** version 2 leniente: descarta métricas/visualizações desconhecidas. */
+function normalizeCharts(raw: unknown): ChartConfig[] {
+  if (!Array.isArray(raw)) return cloneDefaultCharts();
+  const out: ChartConfig[] = [];
+  const seenIds = new Set<string>();
+  for (let i = 0; i < raw.length && out.length < MAX_CHARTS; i++) {
+    const rec = asRecord(raw[i]);
+    if (!rec) continue;
+    const metric = chartMetricEntry(
+      typeof rec.metric === "string" ? rec.metric : "",
+    );
+    if (!metric) continue;
+
+    const compatible = compatibleVisualizations(metric.key);
+    const wanted = typeof rec.visualization === "string" ? rec.visualization : "";
+    const visualization: VisualizationType = (compatible as string[]).includes(
+      wanted,
+    )
+      ? (wanted as VisualizationType)
+      : (compatible[0] ?? "area");
+
+    const titleRaw = typeof rec.title === "string" ? rec.title.trim() : "";
+    const title =
+      titleRaw.length > 0 ? titleRaw.slice(0, 80) : defaultChartTitle(metric.key);
+
+    let id =
+      typeof rec.id === "string" && rec.id.trim().length > 0
+        ? rec.id.trim().slice(0, 40)
+        : "";
+    if (!id || seenIds.has(id)) id = `chart_${i}`;
+    seenIds.add(id);
+
+    out.push({
+      id,
+      metric: metric.key,
+      visualization,
+      title,
+      enabled: rec.enabled === true,
+    });
+  }
+  return out;
+}
+
+/* ================================================================== */
+/* Leitura leniente (nunca lança) — migra version 1 automaticamente    */
+/* ================================================================== */
 
 export interface RawDashboardConfig {
   result_metric?: unknown;
@@ -305,16 +522,20 @@ export function parseDashboardConfig(
   raw: RawDashboardConfig | null | undefined,
 ): DashboardConfigValue {
   const layoutRec = asRecord(raw?.layout);
+  const resultMetric = normalizeResultMetric(raw?.result_metric);
+  const version = Number(layoutRec?.version);
+
+  const charts =
+    version === 2
+      ? normalizeCharts(layoutRec?.charts)
+      : migrateV1Charts(layoutRec?.charts, resultMetric);
+
   return {
-    resultMetric: normalizeResultMetric(raw?.result_metric),
+    resultMetric,
     layout: {
-      version: 1,
+      version: 2,
       cards: normalizeList(layoutRec?.cards, CARD_CATALOG, DEFAULT_ENABLED_CARDS),
-      charts: normalizeList(
-        layoutRec?.charts,
-        CHART_CATALOG,
-        DEFAULT_ENABLED_CHARTS,
-      ),
+      charts,
       tableColumns: normalizeList(
         layoutRec?.tableColumns,
         TABLE_COLUMN_CATALOG,
@@ -325,9 +546,9 @@ export function parseDashboardConfig(
   };
 }
 
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 /* Validação estrita (para salvar)                                     */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
 
 export type SanitizeResult =
   | { ok: true; value: DashboardConfigValue }
@@ -355,6 +576,66 @@ function validateStrictList(
   return null;
 }
 
+const CHART_ALLOWED_KEYS = new Set([
+  "id",
+  "metric",
+  "visualization",
+  "title",
+  "enabled",
+]);
+
+function validateCharts(raw: unknown): string | null {
+  if (!Array.isArray(raw)) return "Configuração de gráficos inválida.";
+  if (raw.length > MAX_CHARTS) {
+    return `São permitidos no máximo ${MAX_CHARTS} gráficos.`;
+  }
+  const ids = new Set<string>();
+  for (const item of raw) {
+    const rec = asRecord(item);
+    if (!rec) return "Gráfico inválido.";
+    for (const k of Object.keys(rec)) {
+      if (!CHART_ALLOWED_KEYS.has(k)) {
+        return `Campo desconhecido em gráfico: "${k}".`;
+      }
+    }
+    const metric = chartMetricEntry(
+      typeof rec.metric === "string" ? rec.metric : "",
+    );
+    if (!metric) {
+      return `Métrica de gráfico não permitida: "${String(rec.metric)}".`;
+    }
+    if (metric.requiresMeta) {
+      return `"${metric.label}" ficará disponível após a integração com a Meta Ads.`;
+    }
+    const viz = VISUALIZATION_BY_KEY.get(
+      typeof rec.visualization === "string"
+        ? (rec.visualization as VisualizationType)
+        : ("" as VisualizationType),
+    );
+    if (!viz || !viz.implemented) {
+      return `Tipo de gráfico não permitido: "${String(rec.visualization)}".`;
+    }
+    if (!isChartCombinationValid(metric.key, viz.key)) {
+      return `"${viz.label}" não é compatível com "${metric.label}".`;
+    }
+    if (typeof rec.title !== "string" || rec.title.trim().length === 0) {
+      return "Todo gráfico precisa de um título.";
+    }
+    if (rec.title.trim().length > 80) {
+      return "Título de gráfico muito longo (máx. 80 caracteres).";
+    }
+    if (typeof rec.enabled !== "boolean") {
+      return "Estado (ativo/inativo) de gráfico inválido.";
+    }
+    if (typeof rec.id !== "string" || rec.id.trim().length === 0) {
+      return "Gráfico sem identificador.";
+    }
+    if (ids.has(rec.id)) return "Há gráficos com identificador duplicado.";
+    ids.add(rec.id);
+  }
+  return null;
+}
+
 export function sanitizeDashboardConfigInput(raw: unknown): SanitizeResult {
   const rec = asRecord(raw);
   if (!rec) return { ok: false, error: "Configuração inválida." };
@@ -376,8 +657,10 @@ export function sanitizeDashboardConfigInput(raw: unknown): SanitizeResult {
 
   const cardError = validateStrictList(layout.cards, CARD_KEYS, "cards");
   if (cardError) return { ok: false, error: cardError };
-  const chartError = validateStrictList(layout.charts, CHART_KEYS, "gráficos");
+
+  const chartError = validateCharts(layout.charts);
   if (chartError) return { ok: false, error: chartError };
+
   const columnError = validateStrictList(
     layout.tableColumns,
     COLUMN_KEYS,
@@ -391,18 +674,40 @@ export function sanitizeDashboardConfigInput(raw: unknown): SanitizeResult {
     return { ok: false, error: 'A coluna "Campanha" é obrigatória.' };
   }
 
-  // Passou nas checagens estritas — normaliza para o formato canônico.
-  return { ok: true, value: parseDashboardConfig({
-    result_metric: rec.resultMetric,
-    layout: rec.layout,
-  }) };
+  // Tudo validado — monta o valor canônico (não depende de detecção de versão).
+  const chartsInput = layout.charts as Record<string, unknown>[];
+  const charts: ChartConfig[] = chartsInput.map((c) => ({
+    id: String(c.id).trim().slice(0, 40),
+    metric: String(c.metric),
+    visualization: c.visualization as VisualizationType,
+    title: String(c.title).trim().slice(0, 80),
+    enabled: c.enabled === true,
+  }));
+
+  return {
+    ok: true,
+    value: {
+      resultMetric: normalizeResultMetric(rec.resultMetric),
+      layout: {
+        version: 2,
+        cards: normalizeList(layout.cards, CARD_CATALOG, DEFAULT_ENABLED_CARDS),
+        charts,
+        tableColumns: normalizeList(
+          layout.tableColumns,
+          TABLE_COLUMN_CATALOG,
+          DEFAULT_ENABLED_COLUMNS,
+          { requiredKey: REQUIRED_TABLE_COLUMN },
+        ),
+      },
+    },
+  };
 }
 
-/* ------------------------------------------------------------------ */
-/* Helpers de edição (usados no editor)                                */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* Helpers de edição                                                   */
+/* ================================================================== */
 
-export function moveItem(list: LayoutItem[], index: number, dir: -1 | 1): LayoutItem[] {
+export function moveItem<T>(list: T[], index: number, dir: -1 | 1): T[] {
   const target = index + dir;
   if (index < 0 || index >= list.length || target < 0 || target >= list.length) {
     return list;
@@ -431,10 +736,6 @@ export function enabledKeys(items: readonly LayoutItem[]): string[] {
   return items.filter((i) => i.enabled).map((i) => i.key);
 }
 
-/* ------------------------------------------------------------------ */
-/* Mapa card/gráfico -> métrica/série (para renderizar dinamicamente)  */
-/* ------------------------------------------------------------------ */
-
 /** Chave do card -> chave da métrica em ClientDashboardData.metrics. */
 export const CARD_METRIC_KEY: Record<string, string> = {
   investment: "investment",
@@ -455,43 +756,67 @@ export function cardLabel(key: string, metric: ResultMetricConfig): string {
   return catalogLabel(CARD_CATALOG, key);
 }
 
-export interface ChartMapping {
-  /** Chave da série em ClientDashboardData.series. */
-  series: string;
-  format: "currency" | "number";
-  behavior: MetricBehavior;
-  /** Usa o comportamento configurado da métrica principal. */
-  usesMetricBehavior?: boolean;
+/* ---- gráficos ---- */
+
+export function newChartId(): string {
+  const rand =
+    globalThis.crypto?.randomUUID?.().replace(/-/g, "").slice(0, 10) ??
+    Math.random().toString(36).slice(2, 12);
+  return `chart_${rand}`;
 }
 
-export const CHART_MAPPING: Record<string, ChartMapping> = {
-  results_over_time: {
-    series: "results",
-    format: "number",
-    behavior: "higher_is_better",
-    usesMetricBehavior: true,
-  },
-  investment_over_time: { series: "spend", format: "currency", behavior: "neutral" },
-  cost_per_result_over_time: {
-    series: "cost_per_result",
-    format: "currency",
-    behavior: "lower_is_better",
-  },
-  reach_over_time: { series: "reach", format: "number", behavior: "higher_is_better" },
-  impressions_over_time: {
-    series: "impressions",
-    format: "number",
-    behavior: "higher_is_better",
-  },
-  clicks_over_time: { series: "clicks", format: "number", behavior: "higher_is_better" },
-  ctr_over_time: { series: "ctr", format: "number", behavior: "higher_is_better" },
-  cpc_over_time: { series: "cpc", format: "currency", behavior: "lower_is_better" },
-  cpm_over_time: { series: "cpm", format: "currency", behavior: "neutral" },
-};
+export function newChartConfig(metricKey = "spend"): ChartConfig {
+  const entry = chartMetricEntry(metricKey);
+  const metric =
+    entry && !entry.requiresMeta
+      ? metricKey
+      : (AVAILABLE_CHART_METRICS[0]?.key ?? "spend");
+  const compatible = compatibleVisualizations(metric);
+  return {
+    id: newChartId(),
+    metric,
+    visualization: compatible[0] ?? "area",
+    title: defaultChartTitle(metric),
+    enabled: true,
+  };
+}
 
-export function chartTitle(key: string, metric: ResultMetricConfig): string {
-  if (key === "results_over_time")
-    return `${metric.resultLabel} ao longo do tempo`;
-  if (key === "cost_per_result_over_time") return metric.costLabel;
-  return catalogLabel(CHART_CATALOG, key);
+export function addChart(charts: ChartConfig[], metricKey?: string): ChartConfig[] {
+  if (charts.length >= MAX_CHARTS) return charts;
+  return [...charts, newChartConfig(metricKey)];
+}
+
+export function removeChart(charts: ChartConfig[], id: string): ChartConfig[] {
+  return charts.filter((c) => c.id !== id);
+}
+
+export function updateChart(
+  charts: ChartConfig[],
+  id: string,
+  patch: Partial<Omit<ChartConfig, "id">>,
+): ChartConfig[] {
+  return charts.map((c) => (c.id === id ? { ...c, ...patch } : c));
+}
+
+/**
+ * Troca a métrica de um gráfico ajustando a visualização se ficou
+ * incompatível e o título se ainda era o padrão da métrica anterior.
+ */
+export function changeChartMetric(
+  charts: ChartConfig[],
+  id: string,
+  metricKey: string,
+): ChartConfig[] {
+  const entry = chartMetricEntry(metricKey);
+  if (!entry || entry.requiresMeta) return charts;
+  return charts.map((c) => {
+    if (c.id !== id) return c;
+    const compatible = compatibleVisualizations(metricKey);
+    const visualization = compatible.includes(c.visualization)
+      ? c.visualization
+      : (compatible[0] ?? c.visualization);
+    const wasDefaultTitle = c.title.trim() === defaultChartTitle(c.metric);
+    const title = wasDefaultTitle ? defaultChartTitle(metricKey) : c.title;
+    return { ...c, metric: metricKey, visualization, title };
+  });
 }

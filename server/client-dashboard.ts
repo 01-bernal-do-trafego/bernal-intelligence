@@ -90,6 +90,7 @@ const SERIES_VALUE: Record<string, (t: DailyTotal) => number> = {
   ctr: (t) => safeDivide(t.clicks, t.impressions) * 100,
   cpc: (t) => safeDivide(t.spend, t.clicks),
   cpm: (t) => safeDivide(t.spend, t.impressions) * 1000,
+  frequency: (t) => safeDivide(t.impressions, t.reach),
 };
 
 /**

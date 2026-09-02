@@ -3,6 +3,8 @@
 import {
   Area,
   AreaChart,
+  Bar,
+  BarChart,
   CartesianGrid,
   Line,
   LineChart,
@@ -24,21 +26,15 @@ import {
 import type { ZippedPoint } from "@/lib/series";
 
 export type TrendValueFormat = "currency" | "number";
+export type TrendVariant = "area" | "line" | "bar" | "horizontal_bar";
 
 interface TrendChartProps {
   data: ZippedPoint[];
-  variant?: "area" | "line";
-  /**
-   * Como formatar os valores. String (não função) para poder ser passado de
-   * um Server Component para este Client Component.
-   */
+  variant?: TrendVariant;
   format: TrendValueFormat;
   /** Rótulo da série atual (ex.: "Investimento"). */
   seriesLabel: string;
-  /**
-   * Comportamento da métrica — usado só para colorir a variação no tooltip
-   * quando há comparação. `neutral` não recebe cor.
-   */
+  /** Comportamento da métrica — colore a variação no tooltip. */
   comparisonBehavior?: MetricBehavior;
 }
 
@@ -161,7 +157,24 @@ export function TrendChart({
   const axisFormat = AXIS_FORMATTERS[format];
   const tooltipFormat = TOOLTIP_FORMATTERS[format];
 
-  const commonAxes = (
+  const tooltip = (
+    <Tooltip
+      cursor={
+        variant === "bar" || variant === "horizontal_bar"
+          ? { fill: "var(--bernal-border)", fillOpacity: 0.3 }
+          : { stroke: "var(--bernal-border)" }
+      }
+      content={
+        <TrendTooltip
+          formatValue={tooltipFormat}
+          seriesLabel={seriesLabel}
+          behavior={comparisonBehavior}
+        />
+      }
+    />
+  );
+
+  const timeAxes = (
     <>
       <CartesianGrid stroke="var(--bernal-border)" vertical={false} />
       <XAxis
@@ -181,81 +194,126 @@ export function TrendChart({
         axisLine={false}
         tickCount={5}
       />
-      <Tooltip
-        cursor={{ stroke: "var(--bernal-border)" }}
-        content={
-          <TrendTooltip
-            formatValue={tooltipFormat}
-            seriesLabel={seriesLabel}
-            behavior={comparisonBehavior}
-          />
-        }
-      />
+      {tooltip}
     </>
   );
+
+  let chart: React.ReactElement;
+
+  if (variant === "area") {
+    chart = (
+      <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        <defs>
+          <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={ACCENT} stopOpacity={0.28} />
+            <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        {timeAxes}
+        {hasPrevious && (
+          <Area
+            type="monotone"
+            dataKey="previous"
+            stroke={MUTED}
+            strokeDasharray="4 4"
+            fill="none"
+            strokeWidth={1.5}
+            dot={false}
+            connectNulls
+            isAnimationActive={false}
+          />
+        )}
+        <Area
+          type="monotone"
+          dataKey="current"
+          stroke={ACCENT}
+          strokeWidth={2}
+          fill="url(#trendFill)"
+          dot={false}
+          activeDot={{ r: 3, fill: ACCENT }}
+        />
+      </AreaChart>
+    );
+  } else if (variant === "line") {
+    chart = (
+      <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+        {timeAxes}
+        {hasPrevious && (
+          <Line
+            type="monotone"
+            dataKey="previous"
+            stroke={MUTED}
+            strokeDasharray="4 4"
+            strokeWidth={1.5}
+            dot={false}
+            connectNulls
+            isAnimationActive={false}
+          />
+        )}
+        <Line
+          type="monotone"
+          dataKey="current"
+          stroke={ACCENT}
+          strokeWidth={2}
+          dot={false}
+          activeDot={{ r: 3, fill: ACCENT }}
+        />
+      </LineChart>
+    );
+  } else if (variant === "horizontal_bar") {
+    chart = (
+      <BarChart
+        layout="vertical"
+        data={data}
+        margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+        barGap={2}
+      >
+        <CartesianGrid stroke="var(--bernal-border)" horizontal={false} />
+        <XAxis
+          type="number"
+          tickFormatter={axisFormat}
+          tick={AXIS_STYLE}
+          tickLine={false}
+          axisLine={{ stroke: "var(--bernal-border)" }}
+        />
+        <YAxis
+          type="category"
+          dataKey="date"
+          tickFormatter={formatShortDate}
+          tick={AXIS_STYLE}
+          tickLine={false}
+          axisLine={false}
+          width={44}
+        />
+        {tooltip}
+        {hasPrevious && (
+          <Bar dataKey="previous" fill={MUTED} radius={[0, 2, 2, 0]} isAnimationActive={false} />
+        )}
+        <Bar dataKey="current" fill={ACCENT} radius={[0, 2, 2, 0]} />
+      </BarChart>
+    );
+  } else {
+    chart = (
+      <BarChart
+        data={data}
+        margin={{ top: 8, right: 8, bottom: 0, left: 0 }}
+        barGap={2}
+      >
+        {timeAxes}
+        {hasPrevious && (
+          <Bar dataKey="previous" fill={MUTED} radius={[2, 2, 0, 0]} isAnimationActive={false} />
+        )}
+        <Bar dataKey="current" fill={ACCENT} radius={[2, 2, 0, 0]} />
+      </BarChart>
+    );
+  }
 
   return (
     <div className="flex size-full flex-col gap-2">
       {hasPrevious && <LegendRow seriesLabel={seriesLabel} />}
       <div className="min-h-0 flex-1">
         <ResponsiveContainer width="100%" height="100%">
-          {variant === "area" ? (
-            <AreaChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-              <defs>
-                <linearGradient id="trendFill" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor={ACCENT} stopOpacity={0.28} />
-                  <stop offset="100%" stopColor={ACCENT} stopOpacity={0} />
-                </linearGradient>
-              </defs>
-              {commonAxes}
-              {hasPrevious && (
-                <Area
-                  type="monotone"
-                  dataKey="previous"
-                  stroke={MUTED}
-                  strokeDasharray="4 4"
-                  fill="none"
-                  strokeWidth={1.5}
-                  dot={false}
-                  connectNulls
-                  isAnimationActive={false}
-                />
-              )}
-              <Area
-                type="monotone"
-                dataKey="current"
-                stroke={ACCENT}
-                strokeWidth={2}
-                fill="url(#trendFill)"
-                dot={false}
-                activeDot={{ r: 3, fill: ACCENT }}
-              />
-            </AreaChart>
-          ) : (
-            <LineChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
-              {commonAxes}
-              {hasPrevious && (
-                <Line
-                  type="monotone"
-                  dataKey="previous"
-                  stroke={MUTED}
-                  strokeDasharray="4 4"
-                  strokeWidth={1.5}
-                  dot={false}
-                  connectNulls
-                  isAnimationActive={false}
-                />
-              )}
-              <Line
-                type="monotone"
-                dataKey="current"
-                stroke={ACCENT}
-                strokeWidth={2}
-                dot={false}
-                activeDot={{ r: 3, fill: ACCENT }}
-              />
-            </LineChart>
-          )}
+          {chart}
         </ResponsiveContainer>
       </div>
     </div>

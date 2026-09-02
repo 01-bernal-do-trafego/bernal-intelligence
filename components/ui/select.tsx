@@ -5,6 +5,7 @@ import { cn } from "@/lib/cn";
 export interface SelectOption {
   value: string;
   label: string;
+  disabled?: boolean;
 }
 
 export interface SelectProps
@@ -36,7 +37,12 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
         {...props}
       >
         {options.map((opt) => (
-          <option key={opt.value} value={opt.value} className="bg-surface-elevated">
+          <option
+            key={opt.value}
+            value={opt.value}
+            disabled={opt.disabled}
+            className="bg-surface-elevated"
+          >
             {opt.label}
           </option>
         ))}

@@ -8,7 +8,6 @@ import { cn } from "@/lib/cn";
 import { RESULT_METRIC_PRESETS } from "@/lib/result-metric";
 import {
   CARD_CATALOG,
-  CHART_CATALOG,
   METRIC_BEHAVIORS,
   METRIC_BEHAVIOR_LABEL,
   REQUIRED_TABLE_COLUMN,
@@ -19,6 +18,7 @@ import {
   moveItem,
   toggleItem,
   type CatalogEntry,
+  type ChartConfig,
   type DashboardConfigValue,
   type LayoutItem,
 } from "@/lib/dashboard-config";
@@ -29,6 +29,7 @@ import { Input } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { Select } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { ChartListEditor } from "./chart-list-editor";
 
 interface DashboardEditorProps {
   clientId: string;
@@ -229,12 +230,9 @@ export function DashboardEditor({
           onChange={(cards) => setLayout({ cards })}
         />
 
-        <ReorderableList
-          title="Gráficos"
-          hint="Escolha e ordene os gráficos exibidos."
-          items={layout.charts}
-          catalog={CHART_CATALOG}
-          onChange={(charts) => setLayout({ charts })}
+        <ChartListEditor
+          charts={layout.charts}
+          onChange={(charts: ChartConfig[]) => setLayout({ charts })}
         />
 
         <ReorderableList

@@ -13,9 +13,8 @@ import {
 } from "@/lib/format";
 import {
   CARD_METRIC_KEY,
-  CHART_MAPPING,
   cardLabel,
-  chartTitle,
+  chartMetricEntry,
   enabledKeys,
 } from "@/lib/dashboard-config";
 import { getClientRecord } from "@/server/clients";
@@ -30,7 +29,7 @@ import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { MetricCard, type MetricDelta } from "@/components/ui/metric-card";
 import { ChartContainer } from "@/components/ui/chart-container";
 import { Badge } from "@/components/ui/badge";
-import { TrendChart } from "@/components/charts/trend-chart";
+import { DashboardChart } from "@/components/charts/dashboard-chart";
 import { CampaignsTable } from "@/components/client-dashboard/campaigns-table";
 import { DashboardHeaderActions } from "@/components/client-dashboard/dashboard-header-actions";
 import { DashboardScopeFilters } from "@/components/client-dashboard/dashboard-scope-filters";
@@ -102,7 +101,7 @@ export default async function ClientDashboardPage({
   const { config, metrics, series, resultMetric } = dashboard;
 
   const cardKeys = enabledKeys(config.layout.cards);
-  const chartKeys = enabledKeys(config.layout.charts);
+  const enabledCharts = config.layout.charts.filter((c) => c.enabled);
   const columnKeys = enabledKeys(config.layout.tableColumns);
 
   return (
@@ -194,27 +193,41 @@ export default async function ClientDashboardPage({
         )}
       </section>
 
-      {chartKeys.length > 0 && (
+      {enabledCharts.length > 0 && (
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-          {chartKeys.map((key) => {
-            const mapping = CHART_MAPPING[key];
-            if (!mapping) return null;
-            const pair = series[mapping.series];
-            if (!pair) return null;
-            const behavior = mapping.usesMetricBehavior
+          {enabledCharts.map((chart) => {
+            const entry = chartMetricEntry(chart.metric);
+            const pair = entry?.seriesKey
+              ? series[entry.seriesKey]
+              : undefined;
+            const behavior = entry?.usesResultMetricBehavior
               ? resultMetric.behavior
-              : mapping.behavior;
+              : (entry?.behavior ?? "neutral");
+
+            if (!entry || entry.requiresMeta || !pair) {
+              return (
+                <ChartContainer
+                  key={chart.id}
+                  title={chart.title}
+                  isEmpty
+                  emptyMessage="Métrica disponível após a integração com a Meta Ads."
+                >
+                  <div />
+                </ChartContainer>
+              );
+            }
+
             return (
               <ChartContainer
-                key={key}
-                title={chartTitle(key, resultMetric)}
+                key={chart.id}
+                title={chart.title}
                 isEmpty={pair.current.every((d) => d.value === 0)}
               >
-                <TrendChart
+                <DashboardChart
+                  metric={chart.metric}
+                  visualization={chart.visualization}
+                  title={chart.title}
                   data={zipSeries(pair.current, pair.previous)}
-                  variant={key === "cost_per_result_over_time" ? "line" : "area"}
-                  seriesLabel={chartTitle(key, resultMetric)}
-                  format={mapping.format}
                   comparisonBehavior={behavior}
                 />
               </ChartContainer>
