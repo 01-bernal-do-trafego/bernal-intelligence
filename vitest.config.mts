@@ -9,6 +9,7 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["tests/**/*.test.ts"],
+    // `.tsx` p/ testes de render de componente (react-dom/server, sem DOM).
+    include: ["tests/**/*.test.ts", "tests/**/*.test.tsx"],
   },
 });
