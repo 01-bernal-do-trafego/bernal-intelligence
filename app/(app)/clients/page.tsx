@@ -23,7 +23,7 @@ export default async function ClientsPage({ searchParams }: ClientsPageProps) {
       ? (sp.status as ClientStatus)
       : "all";
 
-  const clients = listClients({ search, status });
+  const clients = await listClients({ search, status });
 
   return (
     <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -31,7 +31,8 @@ export default async function ClientsPage({ searchParams }: ClientsPageProps) {
         <div>
           <h1 className="text-xl font-semibold text-foreground">Clientes</h1>
           <p className="mt-1 text-sm text-muted">
-            {clients.length} cliente{clients.length === 1 ? "" : "s"} na carteira.
+            {clients.length} cliente{clients.length === 1 ? "" : "s"}
+            {search || status !== "all" ? " no filtro atual." : " na carteira."}
           </p>
         </div>
         <Link

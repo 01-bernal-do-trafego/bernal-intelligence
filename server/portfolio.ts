@@ -1,19 +1,14 @@
 import { eachDay } from "@/lib/date-range";
 import { compareMetric, type Comparison } from "@/lib/comparison";
-import { safeDivide } from "@/lib/metrics";
 import { getMockDataset } from "@/lib/mock/dataset";
-import type {
-  ClientStatus,
-  MetaConnectionStatus,
-  PortfolioAlert,
-  TimePoint,
-} from "@/types/domain";
+import type { ClientStatus, PortfolioAlert, TimePoint } from "@/types/domain";
 import type { PeriodPreset } from "@/lib/date-range";
+import { countActiveClients, listClients } from "./clients";
 import { resolveRequestedPeriod } from "./period";
 import { aggregate, dailyTotals, withinRange } from "./mock-helpers";
 
-export interface PortfolioKpis {
-  activeClients: Comparison;
+/** KPIs financeiros da carteira — MOCKADOS até a integração com a Meta Ads. */
+export interface PortfolioFinancials {
   spend: Comparison;
   results: Comparison;
   costPerResult: Comparison;
@@ -22,12 +17,8 @@ export interface PortfolioKpis {
 export interface PortfolioClientRow {
   id: string;
   name: string;
+  internalName: string | null;
   status: ClientStatus;
-  metaStatus: MetaConnectionStatus;
-  healthScore: number;
-  spend: number;
-  results: number;
-  costPerResult: number;
 }
 
 export interface SeriesPair {
@@ -40,87 +31,79 @@ export interface PortfolioOverview {
   compare: boolean;
   range: { start: string; end: string };
   previous: { start: string; end: string };
-  kpis: PortfolioKpis;
-  spendSeries: SeriesPair;
+  /** Contagem REAL de clientes com status "active". */
+  activeClientsCount: number;
+  /** Clientes REAIS (identidade apenas). */
   clients: PortfolioClientRow[];
+  /** MOCK. */
+  financials: PortfolioFinancials;
+  /** MOCK. */
+  spendSeries: SeriesPair;
+  /** Sinaliza para a UI que financeiro/gráfico/alertas ainda são demo. */
+  financialsAreMock: true;
 }
 
-export function getPortfolioOverview(
+export async function getPortfolioOverview(
   preset?: PeriodPreset,
   compare = false,
-): PortfolioOverview {
+): Promise<PortfolioOverview> {
   const resolved = resolveRequestedPeriod(preset, compare);
   const { range, previous } = resolved;
-  const { clients, dailyMetrics } = getMockDataset();
 
+  // ---- REAL (Supabase) --------------------------------------------------
+  const [activeClientsCount, realClients] = await Promise.all([
+    countActiveClients(),
+    listClients({}),
+  ]);
+  const clients: PortfolioClientRow[] = realClients
+    .filter((c) => c.status !== "archived")
+    .map((c) => ({
+      id: c.id,
+      name: c.name,
+      internalName: c.internalName,
+      status: c.status,
+    }));
+
+  // ---- MOCK: financeiro da carteira, sai na integração Meta Ads --------
+  const { dailyMetrics } = getMockDataset();
   const currentRows = withinRange(dailyMetrics, range);
   const previousRows = withinRange(dailyMetrics, previous);
-
   const cur = aggregate(currentRows);
   const prev = aggregate(previousRows);
 
-  const activeCurrent = new Set(
-    currentRows.filter((r) => r.spend > 0).map((r) => r.clientId),
-  ).size;
-  const activePrevious = new Set(
-    previousRows.filter((r) => r.spend > 0).map((r) => r.clientId),
-  ).size;
-
-  const kpis: PortfolioKpis = {
-    activeClients: compareMetric(activeCurrent, activePrevious, "higher_is_better"),
+  const financials: PortfolioFinancials = {
     spend: compareMetric(cur.spend, prev.spend, "neutral"),
     results: compareMetric(cur.results, prev.results, "higher_is_better"),
     costPerResult: compareMetric(cur.cpr, prev.cpr, "lower_is_better"),
   };
 
-  const currentDays = eachDay(range);
-  const spendCurrent: TimePoint[] = dailyTotals(currentRows, currentDays).map((t) => ({
-    date: t.date,
-    value: t.spend,
-  }));
-
-  let spendPrevious: TimePoint[] | null = null;
-  if (compare) {
-    const previousDays = eachDay(previous);
-    spendPrevious = dailyTotals(previousRows, previousDays).map((t) => ({
-      date: t.date,
-      value: t.spend,
-    }));
-  }
-
-  const clientRows: PortfolioClientRow[] = clients
-    .filter((c) => c.status !== "archived")
-    .map((client) => {
-      const agg = aggregate(
-        currentRows.filter((r) => r.clientId === client.id),
-      );
-      return {
-        id: client.id,
-        name: client.name,
-        status: client.status,
-        metaStatus: client.metaStatus,
-        healthScore: client.healthScore,
-        spend: agg.spend,
-        results: agg.results,
-        costPerResult: safeDivide(agg.spend, agg.results),
-      };
-    })
-    .sort((a, b) => b.spend - a.spend);
+  const spendCurrent: TimePoint[] = dailyTotals(currentRows, eachDay(range)).map(
+    (t) => ({ date: t.date, value: t.spend }),
+  );
+  const spendPrevious: TimePoint[] | null = compare
+    ? dailyTotals(previousRows, eachDay(previous)).map((t) => ({
+        date: t.date,
+        value: t.spend,
+      }))
+    : null;
+  // --------------------------------------------------------------------------
 
   return {
     preset: resolved.preset,
     compare,
     range,
     previous,
-    kpis,
+    activeClientsCount,
+    clients,
+    financials,
     spendSeries: { current: spendCurrent, previous: spendPrevious },
-    clients: clientRows,
+    financialsAreMock: true,
   };
 }
 
 /**
- * Alertas da Home. Nesta versão são exemplos fixos (mockados) — a lógica
- * real de detecção virá em fase futura.
+ * Alertas da Home. MOCKADOS — a detecção real virá em fase futura junto com
+ * a integração de dados. Não vinculados aos clientes reais.
  */
 export function getPortfolioAlerts(): PortfolioAlert[] {
   return [

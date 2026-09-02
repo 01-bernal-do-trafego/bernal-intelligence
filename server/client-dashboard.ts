@@ -1,15 +1,15 @@
 import { eachDay, type PeriodPreset } from "@/lib/date-range";
 import { compareMetric, type Comparison } from "@/lib/comparison";
 import { safeDivide } from "@/lib/metrics";
-import { getMockDataset } from "@/lib/mock/dataset";
+import { DEMO_RESULT_METRIC, getDemoPerformance } from "@/lib/mock/demo-performance";
 import type {
   AdAccount,
   Campaign,
   CampaignStatus,
-  Client,
   ResultMetricConfig,
   TimePoint,
 } from "@/types/domain";
+import type { ClientRecord } from "@/types/client";
 import { resolveRequestedPeriod } from "./period";
 import { aggregate, dailyTotals, withinRange } from "./mock-helpers";
 import type { SeriesPair } from "./portfolio";
@@ -33,7 +33,7 @@ export interface DashboardCampaignRow {
 }
 
 export interface ClientDashboardParams {
-  clientId: string;
+  client: ClientRecord;
   preset?: PeriodPreset;
   compare?: boolean;
   accountId?: string;
@@ -41,11 +41,10 @@ export interface ClientDashboardParams {
 }
 
 export interface ClientDashboardData {
-  client: Client;
-  /** Métrica principal configurada para este cliente (rótulos dinâmicos). */
+  /** Identidade REAL do cliente (Supabase). */
+  client: ClientRecord;
   resultMetric: ResultMetricConfig;
   accounts: AdAccount[];
-  /** Campanhas disponíveis para o filtro (respeita o filtro de conta). */
   campaigns: Campaign[];
   filters: { accountId: string; campaignId: string };
   preset: PeriodPreset;
@@ -59,38 +58,40 @@ export interface ClientDashboardData {
     costPerResult: SeriesPair;
   };
   campaignRows: DashboardCampaignRow[];
-  syncedLabel: string;
+  /** TEMPORÁRIO: toda a performance abaixo é mockada e NÃO vem deste cliente. */
+  performanceIsMock: true;
+  metaConnected: false;
 }
 
+/**
+ * Dashboard do cliente. A identidade vem do registro real; TODA a performance
+ * (KPIs, séries, campanhas) vem de `getDemoPerformance()` — perfil demo fixo,
+ * sem qualquer vínculo com o cliente real. Sai na integração com a Meta Ads.
+ */
 export function getClientDashboard(
   params: ClientDashboardParams,
-): ClientDashboardData | null {
-  const { clientId, preset, compare = false } = params;
-  const accountId = params.accountId && params.accountId !== "" ? params.accountId : "all";
+): ClientDashboardData {
+  const { client, preset, compare = false } = params;
+  const accountId =
+    params.accountId && params.accountId !== "" ? params.accountId : "all";
   const campaignId =
     params.campaignId && params.campaignId !== "" ? params.campaignId : "all";
 
-  const { clients, accounts, campaigns, dailyMetrics } = getMockDataset();
-  const client = clients.find((c) => c.id === clientId);
-  if (!client) return null;
-
-  const clientAccounts = accounts.filter((a) => a.clientId === clientId);
-
-  const filterCampaigns = campaigns.filter(
-    (c) =>
-      c.clientId === clientId &&
-      (accountId === "all" || c.accountId === accountId),
+  // ---- MOCK: performance demo, não vinculada ao cliente real -------------
+  const demo = getDemoPerformance();
+  const clientAccounts = demo.accounts;
+  const filterCampaigns = demo.campaigns.filter(
+    (c) => accountId === "all" || c.accountId === accountId,
   );
 
   const resolved = resolveRequestedPeriod(preset, compare);
   const { range, previous } = resolved;
 
-  const matches = (row: (typeof dailyMetrics)[number]) =>
-    row.clientId === clientId &&
-    (accountId === "all" || row.accountId === accountId) &&
-    (campaignId === "all" || row.campaignId === campaignId);
-
-  const scoped = dailyMetrics.filter(matches);
+  const scoped = demo.dailyMetrics.filter(
+    (row) =>
+      (accountId === "all" || row.accountId === accountId) &&
+      (campaignId === "all" || row.campaignId === campaignId),
+  );
   const currentRows = withinRange(scoped, range);
   const previousRows = withinRange(scoped, previous);
 
@@ -104,8 +105,7 @@ export function getClientDashboard(
     reach: compareMetric(cur.reach, prev.reach, "higher_is_better"),
   };
 
-  const currentDays = eachDay(range);
-  const currentTotals = dailyTotals(currentRows, currentDays);
+  const currentTotals = dailyTotals(currentRows, eachDay(range));
 
   const buildPair = (
     valueOf: (t: (typeof currentTotals)[number]) => number,
@@ -145,10 +145,11 @@ export function getClientDashboard(
       };
     })
     .sort((a, b) => b.spend - a.spend);
+  // ---------------------------------------------------------------------------
 
   return {
     client,
-    resultMetric: client.dashboardConfig.resultMetric,
+    resultMetric: DEMO_RESULT_METRIC,
     accounts: clientAccounts,
     campaigns: filterCampaigns,
     filters: { accountId, campaignId },
@@ -159,6 +160,7 @@ export function getClientDashboard(
     kpis,
     series,
     campaignRows,
-    syncedLabel: "Sincronizado há poucos minutos",
+    performanceIsMock: true,
+    metaConnected: false,
   };
 }

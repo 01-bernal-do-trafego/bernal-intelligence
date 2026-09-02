@@ -1,15 +1,14 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, useTransition, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Check, ImageIcon, LayoutDashboard, Lock } from "lucide-react";
+import { createClient } from "@/app/(app)/clients/actions";
+import { cn } from "@/lib/cn";
+import { CLIENT_STATUS_LABEL, type ClientStatus } from "@/types/domain";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
-import { Modal } from "@/components/ui/modal";
-import { cn } from "@/lib/cn";
-import { generateClientId } from "@/lib/id";
-import { CLIENT_STATUS_LABEL, type ClientStatus } from "@/types/domain";
 
 const STATUS_OPTIONS = (Object.keys(CLIENT_STATUS_LABEL) as ClientStatus[]).map(
   (value) => ({ value, label: CLIENT_STATUS_LABEL[value] }),
@@ -54,17 +53,28 @@ function Stepper({ current }: { current: number }) {
 
 export function NewClientForm() {
   const router = useRouter();
-  const [clientId] = useState(generateClientId);
   const [name, setName] = useState("");
   const [internalName, setInternalName] = useState("");
   const [status, setStatus] = useState<ClientStatus>("onboarding");
   const [logoName, setLogoName] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    // Sem persistência nesta fase — apenas confirma a experiência de cadastro.
-    setSaved(true);
+    setError(null);
+    if (!name.trim()) {
+      setError("Informe o nome do cliente.");
+      return;
+    }
+    startTransition(async () => {
+      const result = await createClient({ name, internalName, status });
+      if (!result.ok) {
+        setError(result.error);
+        return;
+      }
+      router.push(`/clients/${result.id}?created=1`);
+    });
   }
 
   return (
@@ -133,9 +143,8 @@ export function NewClientForm() {
           </div>
 
           <p className="text-xs text-muted">
-            ID interno:{" "}
-            <span className="font-mono text-foreground">{clientId}</span> · gerado
-            automaticamente, independente do nome da empresa.
+            O identificador do cliente (UUID) é gerado pelo banco e não depende
+            do nome da empresa.
           </p>
         </div>
 
@@ -165,8 +174,10 @@ export function NewClientForm() {
           </div>
         </div>
 
+        {error && <p className="text-sm text-negative">{error}</p>}
+
         <div className="flex gap-3">
-          <Button type="submit" disabled={!name.trim()}>
+          <Button type="submit" loading={pending} disabled={!name.trim()}>
             Cadastrar cliente
           </Button>
           <Button
@@ -178,25 +189,6 @@ export function NewClientForm() {
           </Button>
         </div>
       </form>
-
-      <Modal
-        open={saved}
-        onClose={() => setSaved(false)}
-        title="Cadastro registrado (mock)"
-        description="A persistência no Supabase entra numa fase seguinte."
-        footer={
-          <Button onClick={() => router.push("/clients")}>
-            Voltar para clientes
-          </Button>
-        }
-      >
-        <p className="text-sm text-muted">
-          <span className="text-foreground">{name || "Cliente"}</span> seria criado
-          com o ID{" "}
-          <span className="font-mono text-foreground">{clientId}</span> e status{" "}
-          <span className="text-foreground">{CLIENT_STATUS_LABEL[status]}</span>.
-        </p>
-      </Modal>
     </>
   );
 }

@@ -8,6 +8,7 @@ import { getPortfolioAlerts, getPortfolioOverview } from "@/server/portfolio";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { MetricCard, type MetricDelta } from "@/components/ui/metric-card";
 import { ChartContainer } from "@/components/ui/chart-container";
+import { Badge } from "@/components/ui/badge";
 import { TrendChart } from "@/components/charts/trend-chart";
 import { AttentionCard } from "@/components/portfolio/attention-card";
 import { PortfolioClientsTable } from "@/components/portfolio/clients-table";
@@ -27,14 +28,16 @@ function delta(comparison: Comparison, compare: boolean): MetricDelta | null {
   };
 }
 
+const DemoTag = () => <Badge tone="muted">Dados demonstrativos</Badge>;
+
 export default async function HomePage({ searchParams }: HomePageProps) {
   const sp = await searchParams;
   const preset = parsePeriod(sp.period);
   const compare = sp.compare === "1";
 
-  const overview = getPortfolioOverview(preset, compare);
+  const overview = await getPortfolioOverview(preset, compare);
   const alerts = getPortfolioAlerts();
-  const { kpis } = overview;
+  const { financials } = overview;
 
   const spendData = zipSeries(
     overview.spendSeries.current,
@@ -55,37 +58,40 @@ export default async function HomePage({ searchParams }: HomePageProps) {
         </Suspense>
       </header>
 
-      <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <MetricCard
-          label="Clientes ativos"
-          value={formatNumber(kpis.activeClients.current)}
-          delta={delta(kpis.activeClients, compare)}
-          hint="Com veiculação no período"
-        />
-        <MetricCard
-          label="Investimento"
-          value={formatCurrency(kpis.spend.current)}
-          delta={delta(kpis.spend, compare)}
-        />
-        <MetricCard
-          label="Resultados"
-          value={formatNumber(kpis.results.current)}
-          delta={delta(kpis.results, compare)}
-        />
-        <MetricCard
-          label="Custo médio por resultado"
-          value={formatCurrency(kpis.costPerResult.current)}
-          delta={delta(kpis.costPerResult, compare)}
-        />
+      <section className="flex flex-col gap-3">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            label="Clientes ativos"
+            value={formatNumber(overview.activeClientsCount)}
+            hint="Cadastrados com status ativo"
+          />
+          <MetricCard
+            label="Investimento"
+            value={formatCurrency(financials.spend.current)}
+            delta={delta(financials.spend, compare)}
+          />
+          <MetricCard
+            label="Resultados"
+            value={formatNumber(financials.results.current)}
+            delta={delta(financials.results, compare)}
+          />
+          <MetricCard
+            label="Custo médio por resultado"
+            value={formatCurrency(financials.costPerResult.current)}
+            delta={delta(financials.costPerResult, compare)}
+          />
+        </div>
+        <p className="text-xs text-muted">
+          Apenas <span className="text-foreground">Clientes ativos</span> usa
+          dados reais. Investimento, Resultados e Custo por resultado ainda são
+          demonstrativos até a conexão com a Meta Ads.
+        </p>
       </section>
 
       <section className="flex flex-col gap-3">
-        <div>
+        <div className="flex items-center gap-2">
           <h2 className="text-base font-semibold text-foreground">Atenção hoje</h2>
-          <p className="text-xs text-muted">
-            Onde agir primeiro — riscos de custo, ritmo de orçamento e
-            oportunidades.
-          </p>
+          <DemoTag />
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {alerts.map((alert) => (
@@ -96,7 +102,8 @@ export default async function HomePage({ searchParams }: HomePageProps) {
 
       <ChartContainer
         title="Investimento da carteira"
-        subtitle="Soma diária de investimento de todos os clientes"
+        subtitle="Demonstrativo — soma diária de investimento (mock)"
+        actions={<DemoTag />}
         isEmpty={spendData.every((d) => d.current === 0)}
       >
         <TrendChart
