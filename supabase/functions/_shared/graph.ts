@@ -272,8 +272,12 @@ export async function listEdge(
 
 /**
  * Campos por nível: base + conversões (`actions`/`action_values`).
- * NÃO pedimos `action_attribution_windows` — cada action traz `value` no
- * padrão de atribuição do anunciante, que é o que o Ads Manager mostra.
+ *
+ * ATRIBUIÇÃO: NÃO pedimos `action_attribution_windows` nem
+ * `use_unified_attribution_setting`. Desde 10/06/2025 a Insights API
+ * desconsidera esse flag e SEMPRE retorna `actions`/`action_values` na
+ * configuração de atribuição UNIFICADA do conjunto de anúncios, espelhando o
+ * Ads Manager. A linha é gravada com attribution_window = 'unified_attribution'.
  */
 export function insightFields(level: "account" | "campaign" | "adset" | "ad"): string {
   const base =

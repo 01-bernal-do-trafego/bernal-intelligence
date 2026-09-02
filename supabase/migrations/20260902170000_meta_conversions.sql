@@ -7,22 +7,58 @@
 -- Depende da META 5 (20260902160000): função meta_upsert_insights_periodic.
 --
 -- O QUE MUDA
---   Uma única coisa: `meta_upsert_insights_periodic` passa a gravar TAMBÉM as
---   colunas jsonb de conversão — `actions`, `action_values`, `raw_actions`,
---   `raw_action_values` — que já existem em `meta_insights_periodic` (META 1)
---   mas eram ignoradas pela RPC.
+--   (a) IDENTIDADE DE ATRIBUIÇÃO. A sincronização NÃO força janela de
+--       atribuição: a Insights API (desde 10/06/2025) já retorna
+--       actions/action_values na configuração UNIFICADA de cada conjunto de
+--       anúncios (= Ads Manager); `use_unified_attribution_setting` é
+--       desconsiderado. O rótulo passa de `7d_click_1d_view` (que sugeria uma
+--       janela fixa) para `unified_attribution`.
+--       As linhas já sincronizadas (só métricas BASE — spend/impressions/
+--       clicks/reach/frequency, que NÃO dependem de atribuição; actions vazias)
+--       são RENOMEADAS in-place. Seguro e sem duplicar:
+--         - cada (level, entity_id, date[/intervalo]) tinha exatamente UMA
+--           linha `7d_click_1d_view` -> vira UMA `unified_attribution`;
+--         - não existem linhas `unified_attribution` ainda -> zero colisão
+--           (e o índice único abortaria se houvesse);
+--         - o re-sync seguinte faz upsert SOBRE a linha renomeada (mesma
+--           chave) e preenche os actions reais.
 --
---   NENHUMA alteração de tabela. `meta_insights_daily` é gravada por upsert
---   direto do service_role (a Edge Function já inclui os campos), sem migration.
+--   (b) `meta_upsert_insights_periodic` passa a gravar TAMBÉM as colunas jsonb
+--       de conversão — `actions`, `action_values`, `raw_actions`,
+--       `raw_action_values` — que já existem em `meta_insights_periodic`
+--       (META 1) mas eram ignoradas pela RPC. E o fallback de
+--       attribution_window vira `unified_attribution`.
+--
+--   `meta_insights_daily` é gravada por upsert direto do service_role (a Edge
+--   Function já inclui os campos) — aqui só o UPDATE de renomeação e o default.
 --
 --   `actions` / `action_values`  = métricas Bernal já resolvidas por PRIORIDADE
 --   (sem dupla contagem — ver supabase/functions/_shared/actions.ts).
---   `raw_actions` / `raw_action_values` = TODOS os action_type crus recebidos,
---   para auditoria e para ampliar o Metric Registry sem re-sync.
+--   `raw_actions` / `raw_action_values` = TODOS os action_type crus recebidos.
 --
 --   SECURITY DEFINER, search_path='', EXECUTE só service_role.
 -- =============================================================================
 
+-- -----------------------------------------------------------------------------
+-- (a) Transição do identificador de atribuição — in-place, idempotente.
+--     WHERE = '7d_click_1d_view' -> 2ª execução é no-op.
+-- -----------------------------------------------------------------------------
+update public.meta_insights_daily
+  set attribution_window = 'unified_attribution'
+  where attribution_window = '7d_click_1d_view';
+
+update public.meta_insights_periodic
+  set attribution_window = 'unified_attribution'
+  where attribution_window = '7d_click_1d_view';
+
+alter table public.meta_insights_daily
+  alter column attribution_window set default 'unified_attribution';
+alter table public.meta_insights_periodic
+  alter column attribution_window set default 'unified_attribution';
+
+-- -----------------------------------------------------------------------------
+-- (b) RPC dos agregados de período: grava conversões + fallback atualizado.
+-- -----------------------------------------------------------------------------
 create or replace function public.meta_upsert_insights_periodic(
   p_client_id      uuid,
   p_ad_account_ref uuid,
@@ -59,7 +95,7 @@ begin
       coalesce(nullif(r->>'period_key',''), 'custom') as period_key,
       (r->>'date_from')::date                   as date_from,
       (r->>'date_to')::date                     as date_to,
-      coalesce(nullif(r->>'attribution_window',''), '7d_click_1d_view') as attribution_window,
+      coalesce(nullif(r->>'attribution_window',''), 'unified_attribution') as attribution_window,
       nullif(r->>'currency','')               as currency,
       nullif(r->>'spend','')::numeric          as spend,
       nullif(r->>'impressions','')::bigint     as impressions,
@@ -133,6 +169,13 @@ grant execute on function public.meta_upsert_insights_periodic(uuid, uuid, jsonb
   to service_role;
 
 -- =============================================================================
--- ROLLBACK: reaplicar a versão da migration 20260902160000_meta_sync.sql
--- (a RPC sem as 4 colunas jsonb). Nenhuma tabela foi alterada.
+-- ROLLBACK MANUAL (não executado):
+--   update public.meta_insights_daily
+--     set attribution_window = '7d_click_1d_view' where attribution_window = 'unified_attribution';
+--   update public.meta_insights_periodic
+--     set attribution_window = '7d_click_1d_view' where attribution_window = 'unified_attribution';
+--   alter table public.meta_insights_daily    alter column attribution_window set default '7d_click_1d_view';
+--   alter table public.meta_insights_periodic alter column attribution_window set default '7d_click_1d_view';
+--   -- + reaplicar meta_upsert_insights_periodic da migration 20260902160000_meta_sync.sql.
+-- Nenhuma tabela teve DDL de coluna alterado (só default + dados).
 -- =============================================================================

@@ -35,7 +35,12 @@ import {
 
 const GRAPH_BASE = Deno.env.get("META_GRAPH_BASE") ?? "https://graph.facebook.com";
 const GRAPH_VERSION = Deno.env.get("META_GRAPH_VERSION") ?? "v26.0";
-const ATTR_WINDOW = "7d_click_1d_view";
+// Não forçamos janela de atribuição: a Insights API (desde 10/06/2025) já
+// retorna actions/action_values na configuração UNIFICADA de cada conjunto de
+// anúncios, espelhando o Ads Manager. `use_unified_attribution_setting` e
+// `action_report_time` são desconsiderados — não os passamos. O identificador
+// abaixo apenas registra essa semântica na linha.
+const ATTR_WINDOW = "unified_attribution";
 
 // Agregados de período: um por preset. A unicidade em meta_insights_periodic é
 // o INTERVALO (date_from,date_to) — o preset é só rótulo. Assim reach/frequency

@@ -23,7 +23,7 @@
  * `meta_insights_periodic_interval_uq`.
  */
 
-export const DEFAULT_ATTRIBUTION_WINDOW = "7d_click_1d_view";
+export const DEFAULT_ATTRIBUTION_WINDOW = "unified_attribution";
 
 export interface PeriodicRowLike {
   level: string;

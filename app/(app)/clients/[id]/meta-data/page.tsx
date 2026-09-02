@@ -5,6 +5,7 @@ import { ChevronLeft, Info } from "lucide-react";
 import { notFound } from "next/navigation";
 import { formatDecimal, formatNumber, formatPercent } from "@/lib/format";
 import { periodLabel } from "@/lib/date-range";
+import { metaAttributionLabel } from "@/lib/meta/config";
 import { getClientRecord } from "@/server/clients";
 import { getMetaConnection } from "@/server/meta-connection";
 import {
@@ -148,9 +149,13 @@ export default async function MetaDataPage({ params, searchParams }: PageProps) 
           value={period.dateFrom && period.dateTo ? `${period.dateFrom} → ${period.dateTo}` : "—"}
         />
         <Field
-          label="Janela de atribuição"
-          value={attributionWindow ? "padrão do anunciante" : "—"}
-          sub={attributionWindow ?? undefined}
+          label="Atribuição"
+          value={metaAttributionLabel(attributionWindow)}
+          sub={
+            attributionWindow === "unified_attribution"
+              ? "config. dos conjuntos de anúncios (não forçamos janela)"
+              : (attributionWindow ?? undefined)
+          }
         />
         <Field
           label="Última sincronização"

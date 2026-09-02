@@ -205,7 +205,7 @@ describe("normalizeInsightRow", () => {
       level: "ad",
       adAccountId: "act_1234567890",
     })!;
-    expect(row.attributionWindow).toBe("7d_click_1d_view"); // default
+    expect(row.attributionWindow).toBe("unified_attribution"); // default (config unificada)
   });
 });
 

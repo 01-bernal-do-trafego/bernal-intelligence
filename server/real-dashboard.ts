@@ -15,7 +15,7 @@ import {
   rangeCoverage,
 } from "@/lib/meta/daily-coverage";
 import { utcOffsetMinutes } from "@/lib/meta/timezone";
-import { META_DEFAULT_ATTRIBUTION_WINDOW } from "@/lib/meta/config";
+import { META_ATTRIBUTION_QUERY_VALUES } from "@/lib/meta/config";
 import {
   REACH_MULTI_ACCOUNT_NOTE,
   REACH_NOT_SYNCED_NOTE,
@@ -44,7 +44,9 @@ import type {
 } from "./client-dashboard";
 import type { SeriesPair } from "./portfolio";
 
-const ATTR = META_DEFAULT_ATTRIBUTION_WINDOW;
+// Transição: aceita o identificador novo (`unified_attribution`) e o legado.
+// Nunca há os dois para a mesma linha de insight -> sem ambiguidade.
+const ATTR_VALUES = META_ATTRIBUTION_QUERY_VALUES;
 
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v)
@@ -171,7 +173,7 @@ export async function getRealClientDashboard(
     )
     .eq("client_id", client.id)
     .eq("level", level)
-    .eq("attribution_window", ATTR)
+    .in("attribution_window", ATTR_VALUES)
     .gte("date", dailyFrom)
     .lte("date", dailyTo);
   if (scope === "campaign") dailyQuery = dailyQuery.eq("entity_id", campaignId);
@@ -277,7 +279,7 @@ export async function getRealClientDashboard(
       .eq("level", level)
       .eq("entity_id", reachEntity)
       .eq("period_key", preset)
-      .eq("attribution_window", ATTR)
+      .in("attribution_window", ATTR_VALUES)
       .order("date_to", { ascending: false })
       .limit(1)
       .maybeSingle();
@@ -397,14 +399,14 @@ export async function getRealClientDashboard(
       .eq("client_id", client.id)
       .eq("level", "campaign")
       .eq("period_key", preset)
-      .eq("attribution_window", ATTR)
+      .in("attribution_window", ATTR_VALUES)
       .order("date_to", { ascending: false }),
     supabase
       .from("meta_insights_daily")
       .select("entity_id, spend, impressions, clicks")
       .eq("client_id", client.id)
       .eq("level", "campaign")
-      .eq("attribution_window", ATTR)
+      .in("attribution_window", ATTR_VALUES)
       .gte("date", range.start)
       .lte("date", range.end),
   ]);

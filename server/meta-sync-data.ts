@@ -12,6 +12,10 @@ import {
   type EventRow,
 } from "@/lib/meta/conversion-events";
 import { RESULT_METRIC_PRESETS } from "@/lib/result-metric";
+import {
+  META_ATTRIBUTION_LEGACY_WINDOW,
+  META_ATTRIBUTION_QUERY_VALUES,
+} from "@/lib/meta/config";
 import { parsePeriod, type PeriodPreset } from "@/lib/date-range";
 import type { ResultMetricType } from "@/types/domain";
 
@@ -199,6 +203,7 @@ export const getMetaValidationOverview = cache(
             .eq("client_id", clientId)
             .eq("level", "account")
             .eq("period_key", preset)
+            .in("attribution_window", META_ATTRIBUTION_QUERY_VALUES)
             .order("date_to", { ascending: false })
             .order("synced_at", { ascending: false })
             .limit(1)
@@ -241,7 +246,12 @@ export const getMetaValidationOverview = cache(
           .eq("level", "campaign")
           .eq("date_from", accTot.date_from)
           .eq("date_to", accTot.date_to)
-          .eq("attribution_window", accTot.attribution_window ?? "7d_click_1d_view");
+          .eq(
+            "attribution_window",
+            (typeof accTot.attribution_window === "string" &&
+              accTot.attribution_window) ||
+              META_ATTRIBUTION_LEGACY_WINDOW,
+          );
         campTotData = (campTotRes.data ?? []) as Record<string, unknown>[];
       }
 
