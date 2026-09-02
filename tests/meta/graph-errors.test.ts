@@ -70,4 +70,30 @@ describe("parse/describe DiscoveryReason", () => {
     );
     expect(describeDiscoveryReason("unknown")).toMatch(/não foi possível/i);
   });
+
+  it("reasons da sincronização (META 5)", () => {
+    expect(parseDiscoveryReason("sync_already_running")).toBe("sync_already_running");
+    expect(parseDiscoveryReason("no_linked_account")).toBe("no_linked_account");
+    expect(parseDiscoveryReason("partial")).toBe("partial");
+    expect(describeDiscoveryReason("sync_already_running")).toMatch(/em andamento/i);
+    expect(describeDiscoveryReason("no_linked_account")).toMatch(/vincule uma conta/i);
+    expect(describeDiscoveryReason("partial")).toMatch(/parcial/i);
+  });
+});
+
+describe("classificação em contexto de sincronização", () => {
+  it("erro 190 no meio da sync => token_revoked (marca reconexão)", () => {
+    expect(
+      classifyMetaErrorBody({ error: { type: "OAuthException", code: 190 } }),
+    ).toBe("token_revoked");
+  });
+  it("erro 10 => insufficient_permission", () => {
+    expect(classifyMetaErrorBody({ error: { code: 10 } })).toBe(
+      "insufficient_permission",
+    );
+  });
+  it("rate limit (4 / 80000) => rate_limited", () => {
+    expect(classifyMetaErrorBody({ error: { code: 4 } })).toBe("rate_limited");
+    expect(classifyMetaErrorBody({ error: { code: 80000 } })).toBe("rate_limited");
+  });
 });

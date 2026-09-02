@@ -193,6 +193,14 @@ export default async function ClientDashboardPage({
                 initialAccounts={metaAdAccounts}
               />
             )}
+            {metaConnected && linkedAdAccounts.length > 0 && (
+              <Link
+                href={`/clients/${client.id}/meta-data`}
+                className="inline-flex h-8 items-center rounded-lg border border-border bg-surface-elevated px-3 text-xs font-medium text-foreground transition-colors hover:border-muted/40"
+              >
+                Validar sincronização
+              </Link>
+            )}
             <EditClientButton client={client} />
             <DashboardHeaderActions clientId={client.id} config={config} />
           </div>

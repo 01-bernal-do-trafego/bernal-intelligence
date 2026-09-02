@@ -196,3 +196,119 @@ export async function listAdAccounts(
 
   return pages;
 }
+
+// ---------------------------------------------------------------------------
+// Sincronização (META 5) — paginação genérica por cursor `after`
+// ---------------------------------------------------------------------------
+
+export class GraphPaginationOverflow extends Error {
+  constructor(public endpoint: string, public pages: number) {
+    super(`pagination_overflow:${endpoint}:${pages}`);
+  }
+}
+
+/**
+ * GET paginado de um edge do nó da conta (`/{act_id}/<edge>`), seguindo o
+ * cursor `after`. Token sempre no header. Acumula TODAS as linhas — o chamador
+ * só persiste quando o edge terminou 100%. Estoura `GraphPaginationOverflow`
+ * se passar de `maxPages` (nunca roda sem fim).
+ */
+export async function listEdge(
+  input: GraphConfig & {
+    token: string;
+    /** ex.: "act_123/campaigns" */
+    path: string;
+    fields: string;
+    params?: Record<string, string>;
+    pageLimit?: number;
+    maxPages?: number;
+  },
+): Promise<{ rows: unknown[]; pages: number }> {
+  const endpoint = `${input.graphBase.replace(/\/+$/, "")}/${input.version}/${input.path.replace(/^\/+/, "")}`;
+  const limit = String(input.pageLimit ?? 100);
+  const maxPages = input.maxPages ?? 200;
+
+  const rows: unknown[] = [];
+  let after: string | null = null;
+  let pages = 0;
+
+  do {
+    pages += 1;
+    const url = new URL(endpoint);
+    url.searchParams.set("fields", input.fields);
+    url.searchParams.set("limit", limit);
+    for (const [k, v] of Object.entries(input.params ?? {})) {
+      url.searchParams.set(k, v);
+    }
+    if (after) url.searchParams.set("after", after);
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${input.token}` },
+    });
+    const body = (await res.json().catch(() => null)) as
+      | { data?: unknown; paging?: { next?: unknown; cursors?: { after?: unknown } } }
+      | null;
+
+    if (!res.ok || !body) {
+      throw new GraphApiError(classifyGraphError(body));
+    }
+    if (Array.isArray(body.data)) rows.push(...body.data);
+
+    const hasNext = Boolean(body.paging && typeof body.paging.next === "string");
+    const nextAfter =
+      body.paging?.cursors && typeof body.paging.cursors.after === "string"
+        ? body.paging.cursors.after
+        : null;
+    after = hasNext ? nextAfter : null;
+
+    if (after && pages >= maxPages) {
+      throw new GraphPaginationOverflow(input.path, pages);
+    }
+  } while (after);
+
+  return { rows, pages };
+}
+
+/** Campos mínimos por nível para os insights base desta etapa. */
+export function insightFields(level: "account" | "campaign" | "adset" | "ad"): string {
+  const base =
+    "spend,impressions,reach,clicks,inline_link_clicks,frequency,date_start,date_stop,account_id";
+  if (level === "campaign") return `${base},campaign_id`;
+  if (level === "adset") return `${base},campaign_id,adset_id`;
+  if (level === "ad") return `${base},campaign_id,adset_id,ad_id`;
+  return base;
+}
+
+/**
+ * GET /{act_id}/insights de um nível. `timeIncrement` = "1" p/ série diária,
+ * omitido p/ o agregado de período (regras do Ads Manager em reach/frequency).
+ */
+export async function listInsights(
+  input: GraphConfig & {
+    token: string;
+    adAccountId: string; // act_123
+    level: "account" | "campaign" | "adset" | "ad";
+    datePreset: string; // "last_30d"
+    timeIncrement?: "1";
+    pageLimit?: number;
+    maxPages?: number;
+  },
+): Promise<{ rows: unknown[]; pages: number }> {
+  const params: Record<string, string> = {
+    level: input.level,
+    date_preset: input.datePreset,
+  };
+  if (input.timeIncrement) params.time_increment = input.timeIncrement;
+
+  return listEdge({
+    graphBase: input.graphBase,
+    version: input.version,
+    token: input.token,
+    path: `${input.adAccountId}/insights`,
+    fields: insightFields(input.level),
+    params,
+    pageLimit: input.pageLimit,
+    maxPages: input.maxPages,
+  });
+}

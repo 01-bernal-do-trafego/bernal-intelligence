@@ -46,24 +46,33 @@ export type DiscoveryReason =
   | "function_unavailable"
   | "decrypt_failed"
   | "account_linked_elsewhere"
+  | "no_linked_account"
+  | "sync_already_running"
+  | "partial"
   | "ok";
 
 const DISCOVERY_MESSAGE: Record<DiscoveryReason, string> = {
   token_revoked:
     "O acesso à Meta foi revogado ou expirou. Reconecte a Meta Ads para continuar.",
   insufficient_permission:
-    "A autorização atual não tem permissão para listar as contas de anúncio. Reconecte concedendo o acesso a Anúncios.",
+    "A autorização atual não tem permissão para ler os dados de anúncios. Reconecte concedendo o acesso a Anúncios.",
   rate_limited: "A Meta limitou as requisições agora. Tente novamente em alguns minutos.",
   transient: "A Meta está instável no momento. Tente novamente.",
   not_connected: "Este cliente ainda não tem a Meta Ads conectada.",
   no_connection_secret:
     "A credencial da Meta está incompleta. Reconecte a Meta Ads.",
   function_unavailable:
-    "O serviço de descoberta de contas ainda não está disponível neste ambiente.",
+    "O serviço de sincronização ainda não está disponível neste ambiente.",
   decrypt_failed:
     "Não foi possível abrir a credencial da Meta com segurança. Reconecte a Meta Ads.",
   account_linked_elsewhere:
     "Uma das contas selecionadas já está vinculada a outro cliente.",
+  no_linked_account:
+    "Nenhuma conta de anúncio vinculada. Vincule uma conta antes de sincronizar.",
+  sync_already_running:
+    "Já existe uma sincronização em andamento para esta conta. Aguarde ela terminar.",
+  partial:
+    "A sincronização terminou parcialmente — parte dos dados não veio. Tente novamente.",
   unknown: "Não foi possível consultar a Meta. Tente novamente.",
   ok: "",
 };
@@ -79,6 +88,9 @@ export function parseDiscoveryReason(value: string | null | undefined): Discover
     "function_unavailable",
     "decrypt_failed",
     "account_linked_elsewhere",
+    "no_linked_account",
+    "sync_already_running",
+    "partial",
     "ok",
   ];
   return (known as string[]).includes(value ?? "")
