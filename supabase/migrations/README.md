@@ -10,7 +10,8 @@ Migrations SQL versionadas do banco (Supabase / PostgreSQL).
 | `20260902130000_meta_integration.sql` | META 1 — 11 tabelas `meta_*` + RLS | Sim |
 | `20260902140000_meta_oauth.sql` | META 2 — RPC `meta_oauth_upsert_connection` (grava conexão + token cifrado numa transação) | Sim |
 | `20260902150000_meta_ad_accounts.sql` | META 3 — `drop column meta_ad_accounts.timezone_offset_utc` + RPCs `meta_upsert_ad_accounts` / `meta_set_linked_accounts` (descoberta, vínculo e transferência de contas em reconexão) | Sim |
-| `20260902160000_meta_sync.sql` | META 5 — índice único parcial `meta_sync_runs (ad_account_ref) where status='running'` + RPCs `meta_sync_acquire` / `meta_sync_release` / `meta_upsert_insights_periodic` (1ª sincronização real) | **NÃO** |
+| `20260902160000_meta_sync.sql` | META 5 — índice único parcial `meta_sync_runs (ad_account_ref) where status='running'` + RPCs `meta_sync_acquire` / `meta_sync_release` / `meta_upsert_insights_periodic` (1ª sincronização real) | Sim |
+| `20260902170000_meta_conversions.sql` | Conversões V1 — `meta_upsert_insights_periodic` passa a gravar `actions`/`action_values`/`raw_actions`/`raw_action_values` (sem DDL de tabela) | **NÃO** |
 
 ## Como aplicar (quando autorizado)
 

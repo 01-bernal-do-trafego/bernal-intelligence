@@ -36,7 +36,16 @@ Erros: `401 unauthorized`, `403 forbidden`, `400 bad_request`,
 
 ## Regras
 
-- Só métricas base: `spend, impressions, reach, clicks, inline_link_clicks, frequency`.
+- Métricas base: `spend, impressions, reach, clicks, inline_link_clicks, frequency`.
+- **Conversões (V1):** também busca `actions` / `action_values` e grava
+  `actions`/`action_values` (resolvidos por PRIORIDADE — sem dupla contagem, ver
+  `_shared/actions.ts`) + `raw_actions`/`raw_action_values` (crus, auditoria).
+  `actions.results` só é gravado quando o evento de `dashboard_configs.result_metric`
+  do cliente veio na resposta. **Não** pede `action_attribution_windows` (usa o
+  padrão do anunciante = o que o Ads Manager mostra). Conversões só aparecem em
+  `/meta-data` — não entram no dashboard principal ainda.
+- **Precisa da migration `20260902170000_meta_conversions.sql`** para os
+  agregados de período gravarem as colunas jsonb (o diário já grava direto).
 - **`reach`/`frequency` do período** vêm da chamada agregada → `meta_insights_periodic`. Nunca da soma do diário.
 - Sem criativos nesta etapa (mas `meta_ads.creative_id` é gravado quando vem).
 - Nenhum `console.*`. `meta_sync_runs.error_text` recebe só códigos/stage names.

@@ -1,12 +1,15 @@
 /**
- * Normalização base de insights (Edge Function / Deno). Espelha a fatia base de
+ * Normalização de insights (Edge Function / Deno). Espelha a fatia base de
  * `lib/meta/sync-insights.ts` + `lib/meta/normalizer.ts` do app (a versão do
- * app é a testada). Só métricas base nesta etapa: spend, impressions, reach,
- * clicks, inline_link_clicks, frequency. Sem conversões.
+ * app é a testada). Métricas base (spend/impressions/reach/clicks/
+ * inline_link_clicks/frequency) + CONVERSÕES (actions/action_values resolvidos
+ * por prioridade + crus para auditoria — ver `./actions.ts`).
  *
  * Ausência de campo => null (nunca 0). Devolve linhas já no formato snake_case
  * das tabelas meta_insights_daily / meta_insights_periodic.
  */
+
+import { normalizeActions } from "./actions.ts";
 
 export type InsightLevel = "account" | "campaign" | "adset" | "ad";
 
@@ -62,10 +65,10 @@ export interface DbInsightRow {
   clicks: number | null;
   inline_link_clicks: number | null;
   frequency: number | null;
-  actions: Record<string, never>;
-  action_values: Record<string, never>;
-  raw_actions: Record<string, never>;
-  raw_action_values: Record<string, never>;
+  actions: Record<string, number>;
+  action_values: Record<string, number>;
+  raw_actions: Record<string, number>;
+  raw_action_values: Record<string, number>;
 }
 
 export interface DailyInsightRow extends DbInsightRow {
@@ -84,11 +87,14 @@ interface Ctx {
   level: InsightLevel;
   attributionWindow: string;
   currency: string | null;
+  /** tipo de result_metric do cliente (define a fonte de `actions.results`). */
+  resultMetricType?: string | null;
 }
 
 function baseRow(raw: Record<string, unknown>, ctx: Ctx): DbInsightRow | null {
   const eid = entityId(raw, ctx.level, ctx.adAccountId);
   if (!eid) return null;
+  const conv = normalizeActions(raw.actions, raw.action_values, ctx.resultMetricType);
   return {
     client_id: ctx.clientId,
     ad_account_ref: ctx.adAccountRef,
@@ -106,10 +112,10 @@ function baseRow(raw: Record<string, unknown>, ctx: Ctx): DbInsightRow | null {
     clicks: intOrNull(raw.clicks),
     inline_link_clicks: intOrNull(raw.inline_link_clicks),
     frequency: numOrNull(raw.frequency),
-    actions: {},
-    action_values: {},
-    raw_actions: {},
-    raw_action_values: {},
+    actions: conv.actions,
+    action_values: conv.action_values,
+    raw_actions: conv.raw_actions,
+    raw_action_values: conv.raw_action_values,
   };
 }
 

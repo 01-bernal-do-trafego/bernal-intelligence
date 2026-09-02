@@ -270,10 +270,14 @@ export async function listEdge(
   return { rows, pages };
 }
 
-/** Campos mínimos por nível para os insights base desta etapa. */
+/**
+ * Campos por nível: base + conversões (`actions`/`action_values`).
+ * NÃO pedimos `action_attribution_windows` — cada action traz `value` no
+ * padrão de atribuição do anunciante, que é o que o Ads Manager mostra.
+ */
 export function insightFields(level: "account" | "campaign" | "adset" | "ad"): string {
   const base =
-    "spend,impressions,reach,clicks,inline_link_clicks,frequency,date_start,date_stop,account_id";
+    "spend,impressions,reach,clicks,inline_link_clicks,frequency,actions,action_values,date_start,date_stop,account_id";
   if (level === "campaign") return `${base},campaign_id`;
   if (level === "adset") return `${base},campaign_id,adset_id`;
   if (level === "ad") return `${base},campaign_id,adset_id,ad_id`;

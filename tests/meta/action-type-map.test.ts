@@ -108,6 +108,36 @@ describe("resolveActionMetric — anti dupla contagem", () => {
     ]);
     expect(resolveActionMetric(["a", "b"], present, "sum")).toBe(7);
   });
+
+  it("dupla contagem de LEAD: lead=40 + offsite lead=40 + grouped=40 => 40, não 120", () => {
+    const present = new Map([
+      ["lead", 40],
+      ["offsite_conversion.fct.lead", 40],
+      ["onsite_conversion.lead_grouped", 40],
+    ]);
+    expect(resolveActionMetric(actionTypesForMetric("leads"), present, "priority")).toBe(40);
+  });
+
+  it("aliases de CONVERSA: usa a granularidade prioritária, não soma", () => {
+    const present = new Map([
+      ["onsite_conversion.messaging_conversation_started_7d", 42],
+      ["onsite_conversion.total_messaging_connection", 55],
+    ]);
+    expect(
+      resolveActionMetric(actionTypesForMetric("conversations"), present, "priority"),
+    ).toBe(42);
+  });
+
+  it("omni_purchase presente vence purchase e offsite (mesmo com valores diferentes)", () => {
+    const present = new Map([
+      ["omni_purchase", 9],
+      ["purchase", 7],
+      ["offsite_conversion.fct.purchase", 7],
+    ]);
+    expect(
+      resolveActionMetric(actionTypesForMetric("purchases"), present, "priority"),
+    ).toBe(9);
+  });
 });
 
 describe("RESULT_METRIC_ACTION_TYPES", () => {

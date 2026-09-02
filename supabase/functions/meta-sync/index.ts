@@ -236,6 +236,18 @@ Deno.serve(async (req: Request) => {
     return json({ error: "decrypt_failed" }, 500);
   }
 
+  // tipo de result_metric do cliente -> fonte de `actions.results`.
+  const { data: dcfg } = await admin
+    .from("dashboard_configs")
+    .select("result_metric")
+    .eq("client_id", clientId)
+    .maybeSingle();
+  const rmRaw = (dcfg as { result_metric?: unknown } | null)?.result_metric;
+  const resultMetricType =
+    rmRaw && typeof rmRaw === "object" && typeof (rmRaw as Record<string, unknown>).type === "string"
+      ? ((rmRaw as Record<string, unknown>).type as string)
+      : "results";
+
   const graph = { graphBase: GRAPH_BASE, version: GRAPH_VERSION, token };
   const results: Array<Record<string, unknown>> = [];
   let envelopeRange = dailyHorizon(accountToday(null));
@@ -282,6 +294,7 @@ Deno.serve(async (req: Request) => {
       level,
       attributionWindow: ATTR_WINDOW,
       currency: acc.currency,
+      resultMetricType,
     });
 
     // ---- estrutura -----------------------------------------------------

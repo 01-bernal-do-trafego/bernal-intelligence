@@ -1,8 +1,10 @@
+import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { ChevronLeft, Info } from "lucide-react";
 import { notFound } from "next/navigation";
 import { formatDecimal, formatNumber, formatPercent } from "@/lib/format";
+import { periodLabel } from "@/lib/date-range";
 import { getClientRecord } from "@/server/clients";
 import { getMetaConnection } from "@/server/meta-connection";
 import {
@@ -11,12 +13,27 @@ import {
 } from "@/server/meta-sync-data";
 import { MetaConnectionBadge } from "@/components/shared/status-badges";
 import { SyncMetaButton } from "@/components/clients/sync-meta-button";
+import { DateRangePicker } from "@/components/ui/date-range-picker";
 
 export const metadata: Metadata = { title: "Validar sincronização" };
 
 interface PageProps {
   params: Promise<{ id: string }>;
+  searchParams: Promise<{ period?: string }>;
 }
+
+const CONV_LABEL: Record<string, string> = {
+  results: "Resultados",
+  cost_per_result: "Custo por resultado",
+  leads: "Leads",
+  cpl: "CPL",
+  conversations: "Conversas",
+  cost_per_conversation: "Custo por conversa",
+  purchases: "Compras",
+  cpa: "CPA",
+  revenue: "Receita",
+  roas: "ROAS",
+};
 
 function money(value: number | null, currency: string | null): string {
   if (value === null) return "—";
@@ -32,6 +49,18 @@ function money(value: number | null, currency: string | null): string {
 const dash = (v: number | null, fmt: (n: number) => string) =>
   v === null ? "—" : fmt(v);
 
+function fmtConv(
+  id: string,
+  v: number | null,
+  currency: string | null,
+): string {
+  if (v === null) return "—";
+  if (id === "roas") return formatDecimal(v, 2);
+  if (["revenue", "cpl", "cpa", "cost_per_conversation", "cost_per_result"].includes(id))
+    return money(v, currency);
+  return formatNumber(v);
+}
+
 function dt(value: string | null): string {
   if (!value) return "—";
   const t = Date.parse(value);
@@ -40,17 +69,30 @@ function dt(value: string | null): string {
     : "—";
 }
 
-export default async function MetaDataPage({ params }: PageProps) {
+export default async function MetaDataPage({ params, searchParams }: PageProps) {
   const { id } = await params;
+  const sp = await searchParams;
   const client = await getClientRecord(id);
   if (!client) notFound();
 
   const [connection, overview] = await Promise.all([
     getMetaConnection(client.id),
-    getMetaValidationOverview(client.id),
+    getMetaValidationOverview(client.id, sp.period),
   ]);
 
-  const { account, lastRun, period, totals, counts, campaigns } = overview;
+  const {
+    account,
+    lastRun,
+    period,
+    totals,
+    counts,
+    campaigns,
+    events,
+    conversionRows,
+    resultMetric,
+    relevantConversionColumns,
+    attributionWindow,
+  } = overview;
   const currency = account?.currency ?? null;
 
   const totalCards: Array<{ label: string; value: string }> = [
@@ -63,6 +105,9 @@ export default async function MetaDataPage({ params }: PageProps) {
     { label: "CPC", value: money(totals.cpc, currency) },
     { label: "CPM", value: money(totals.cpm, currency) },
   ];
+
+  const mappedEvents = events.filter((e) => e.status === "mapped");
+  const unmappedEvents = events.filter((e) => e.status === "unmapped");
 
   return (
     <div className="mx-auto flex max-w-5xl flex-col gap-6">
@@ -87,16 +132,25 @@ export default async function MetaDataPage({ params }: PageProps) {
         <p>
           Área de <span className="text-foreground">administração</span>: dados
           reais sincronizados da Meta, para conferir manualmente contra o Ads
-          Manager <span className="text-foreground">antes</span> de substituir os
-          cards do dashboard. Nada aqui altera o dashboard do cliente.
+          Manager <span className="text-foreground">antes</span> de liberar no
+          dashboard do cliente. Nada aqui altera o dashboard.
         </p>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+      <Suspense fallback={<div className="h-10" />}>
+        <DateRangePicker />
+      </Suspense>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-4">
         <Field label="Conta" value={account?.name ?? account?.adAccountId ?? "—"} sub={account?.adAccountId} />
         <Field
-          label="Período (últimos 30 dias)"
+          label={`Período · ${periodLabel(overview.preset)}`}
           value={period.dateFrom && period.dateTo ? `${period.dateFrom} → ${period.dateTo}` : "—"}
+        />
+        <Field
+          label="Janela de atribuição"
+          value={attributionWindow ? "padrão do anunciante" : "—"}
+          sub={attributionWindow ?? undefined}
         />
         <Field
           label="Última sincronização"
@@ -115,15 +169,14 @@ export default async function MetaDataPage({ params }: PageProps) {
 
       {!overview.hasData ? (
         <p className="rounded-lg border border-border bg-surface px-4 py-6 text-sm text-muted">
-          Nenhum dado sincronizado ainda. Clique em{" "}
-          <span className="text-foreground">Sincronizar Meta</span> para trazer os
-          últimos 30 dias.
+          Nenhum dado sincronizado para este período. Clique em{" "}
+          <span className="text-foreground">Sincronizar Meta</span>.
         </p>
       ) : (
         <>
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold text-foreground">
-              Totais do período
+              Totais do período (métricas base)
             </h2>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
               {totalCards.map((c) => (
@@ -138,19 +191,9 @@ export default async function MetaDataPage({ params }: PageProps) {
                 </div>
               ))}
             </div>
-            {totals.reach !== null &&
-              totals.frequency !== null &&
-              totals.frequencyComputed !== null &&
-              Math.abs(totals.frequency - totals.frequencyComputed) > 0.05 && (
-                <p className="text-xs text-warning">
-                  Frequência da Meta ({formatDecimal(totals.frequency, 2)}) difere
-                  de impressões/alcance ({formatDecimal(totals.frequencyComputed, 2)}).
-                </p>
-              )}
             <div className="flex flex-wrap gap-4 text-sm text-muted">
               <span>
-                Campanhas:{" "}
-                <span className="text-foreground">{counts.campaigns}</span>
+                Campanhas: <span className="text-foreground">{counts.campaigns}</span>
               </span>
               <span>
                 Conjuntos: <span className="text-foreground">{counts.adsets}</span>
@@ -161,6 +204,139 @@ export default async function MetaDataPage({ params }: PageProps) {
             </div>
           </section>
 
+          {/* ---- Resultado principal configurado ---- */}
+          {resultMetric && (
+            <section className="flex flex-col gap-2">
+              <h2 className="text-base font-semibold text-foreground">
+                Resultado principal do cliente
+              </h2>
+              <div className="rounded-lg border border-border bg-surface px-4 py-3 text-sm">
+                <p className="text-muted">
+                  Configurado: <span className="text-foreground">{resultMetric.label}</span>{" "}
+                  (<span className="font-mono text-xs">{resultMetric.type}</span>)
+                </p>
+                {resultMetric.available ? (
+                  <p className="mt-1 text-foreground">
+                    {resultMetric.label}: <b className="tabular-nums">{formatNumber(resultMetric.value)}</b>{" "}
+                    · {resultMetric.costLabel}:{" "}
+                    <b className="tabular-nums">{money(resultMetric.costPerResult, currency)}</b>
+                    {resultMetric.source && (
+                      <span className="ml-2 font-mono text-xs text-muted">
+                        fonte: {resultMetric.source}
+                      </span>
+                    )}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-warning">
+                    Métrica não disponível neste período/conta — o evento
+                    configurado não veio na resposta da Meta. Nenhuma outra
+                    métrica é usada no lugar.
+                  </p>
+                )}
+              </div>
+            </section>
+          )}
+
+          {/* ---- Métricas de conversão (validação) ---- */}
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold text-foreground">
+              Métricas de conversão (validação)
+            </h2>
+            <p className="text-xs text-muted">
+              Compare manualmente com o Ads Manager no mesmo período. Só entram
+              nos cards/gráficos do dashboard após sua aprovação.
+            </p>
+            <div className="overflow-x-auto rounded-lg border border-border">
+              <table className="w-full text-sm">
+                <thead className="bg-surface-elevated text-left text-xs text-muted">
+                  <tr>
+                    <th className="px-3 py-2">Métrica</th>
+                    <th className="px-3 py-2 text-right">Valor Bernal</th>
+                    <th className="px-3 py-2">Fonte / mapeamento</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {conversionRows.map((r) => (
+                    <tr key={r.id}>
+                      <td className="px-3 py-2 text-foreground">{r.label}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        {fmtConv(r.id, r.value, currency)}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs text-muted">
+                        {r.value === null ? "sem fonte" : (r.source ?? "—")}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          {/* ---- Eventos e conversões ---- */}
+          <section className="flex flex-col gap-3">
+            <h2 className="text-base font-semibold text-foreground">
+              Eventos e conversões
+            </h2>
+            {events.length === 0 ? (
+              <p className="text-sm text-muted">
+                A Meta não retornou eventos de conversão para este período/conta.
+              </p>
+            ) : (
+              <>
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full text-sm">
+                    <thead className="bg-surface-elevated text-left text-xs text-muted">
+                      <tr>
+                        <th className="px-3 py-2">Action type (Meta)</th>
+                        <th className="px-3 py-2">Métrica Bernal</th>
+                        <th className="px-3 py-2 text-right">Valor</th>
+                        <th className="px-3 py-2 text-right">Valor de conversão</th>
+                        <th className="px-3 py-2">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {[...mappedEvents, ...unmappedEvents].map((e) => (
+                        <tr key={e.actionType}>
+                          <td className="px-3 py-2 font-mono text-xs text-foreground">
+                            {e.actionType}
+                          </td>
+                          <td className="px-3 py-2 text-muted">
+                            {e.bernalMetric
+                              ? CONV_LABEL[e.bernalMetric] ?? e.bernalMetric
+                              : e.bernalValueMetric
+                                ? CONV_LABEL[e.bernalValueMetric] ?? e.bernalValueMetric
+                                : "—"}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {e.count === null ? "—" : formatNumber(e.count)}
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums">
+                            {e.value === null ? "—" : money(e.value, currency)}
+                          </td>
+                          <td className="px-3 py-2">
+                            {e.status === "mapped" ? (
+                              <span className="text-positive">Mapeado</span>
+                            ) : (
+                              <span className="text-warning">Requer revisão</span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {unmappedEvents.length > 0 && (
+                  <p className="text-xs text-warning">
+                    {unmappedEvents.length} evento(s) ainda não mapeado(s) — os
+                    valores foram preservados em `raw_actions`; o Metric Registry
+                    pode ser ampliado depois sem re-sincronizar.
+                  </p>
+                )}
+              </>
+            )}
+          </section>
+
+          {/* ---- Campanhas (base + conversões relevantes) ---- */}
           <section className="flex flex-col gap-3">
             <h2 className="text-base font-semibold text-foreground">
               Campanhas (dados reais)
@@ -171,7 +347,7 @@ export default async function MetaDataPage({ params }: PageProps) {
               </p>
             ) : (
               <div className="overflow-x-auto rounded-lg border border-border">
-                <table className="w-full text-sm">
+                <table className="w-full whitespace-nowrap text-sm">
                   <thead className="bg-surface-elevated text-left text-xs text-muted">
                     <tr>
                       <th className="px-3 py-2">Campanha</th>
@@ -183,6 +359,11 @@ export default async function MetaDataPage({ params }: PageProps) {
                       <th className="px-3 py-2 text-right">CTR</th>
                       <th className="px-3 py-2 text-right">CPC</th>
                       <th className="px-3 py-2 text-right">CPM</th>
+                      {relevantConversionColumns.map((id) => (
+                        <th key={id} className="px-3 py-2 text-right">
+                          {CONV_LABEL[id] ?? id}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-border">
@@ -215,6 +396,11 @@ export default async function MetaDataPage({ params }: PageProps) {
                         <td className="px-3 py-2 text-right tabular-nums">
                           {money(c.cpm, currency)}
                         </td>
+                        {relevantConversionColumns.map((cid) => (
+                          <td key={cid} className="px-3 py-2 text-right tabular-nums">
+                            {fmtConv(cid, c.conversions[cid] ?? null, currency)}
+                          </td>
+                        ))}
                       </tr>
                     ))}
                   </tbody>
