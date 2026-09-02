@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Building2, RefreshCw } from "lucide-react";
 import type { ClientAdAccount } from "@/lib/meta/ad-account";
 import { accountStatusLabel } from "@/lib/meta/ad-account";
+import { utcOffsetLabel } from "@/lib/meta/timezone";
 import { describeDiscoveryReason } from "@/lib/meta/graph-errors";
 import {
   discoverAdAccounts,
@@ -213,7 +214,14 @@ export function ManageMetaConnection({
                       <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted">
                         <span className="font-mono">{acc.adAccountId}</span>
                         {acc.currency && <span>{acc.currency}</span>}
-                        {acc.timezoneName && <span>{acc.timezoneName}</span>}
+                        {acc.timezoneName && (
+                          <span>
+                            {acc.timezoneName}
+                            {utcOffsetLabel(acc.timezoneName)
+                              ? ` (${utcOffsetLabel(acc.timezoneName)})`
+                              : ""}
+                          </span>
+                        )}
                         {acc.businessName && (
                           <span className="inline-flex items-center gap-1">
                             <Building2 className="size-3" />

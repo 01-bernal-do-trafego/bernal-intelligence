@@ -141,7 +141,7 @@ export class GraphApiError extends Error {
 }
 
 const AD_ACCOUNT_FIELDS =
-  "account_id,name,account_status,currency,timezone_name,timezone_offset_hours_utc,business{id,name}";
+  "account_id,name,account_status,currency,timezone_name,business{id,name}";
 
 /**
  * Lista TODAS as contas de anúncio disponíveis no token (`/me/adaccounts`),

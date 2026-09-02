@@ -51,7 +51,6 @@ function mapAccounts(rows: unknown): Array<Record<string, unknown>> {
       accountStatus: x.account_status ?? null,
       currency: x.currency ?? null,
       timezoneName: x.timezone_name ?? null,
-      timezoneOffsetUtc: x.timezone_offset_utc ?? null,
       businessId: x.business_id ?? null,
       businessName: x.business_name ?? null,
       isLinked: Boolean(x.is_linked),

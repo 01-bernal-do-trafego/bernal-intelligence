@@ -11,8 +11,8 @@ export interface DiscoveredAdAccount {
   name: string | null;
   accountStatus: number | null;
   currency: string | null;
+  /** Fuso IANA — única fonte de fuso persistida. Offset é derivado no app. */
   timezoneName: string | null;
-  timezoneOffsetUtc: number | null;
   businessId: string | null;
   businessName: string | null;
 }
@@ -55,7 +55,6 @@ function parseNode(node: unknown): DiscoveredAdAccount | null {
     accountStatus: intOrNull(n.account_status),
     currency: str(n.currency),
     timezoneName: str(n.timezone_name),
-    timezoneOffsetUtc: intOrNull(n.timezone_offset_hours_utc),
     businessId: business ? str(business.id) : null,
     businessName: business ? str(business.name) : null,
   };

@@ -65,6 +65,104 @@ export function partitionLinkRequest(args: {
   return { linkable, blocked, unknown };
 }
 
+// ---------------------------------------------------------------------------
+// Reconexão: transferência da conta entre conexões do MESMO cliente.
+//
+// Modela exatamente o que a RPC meta_set_linked_accounts faz numa transação.
+// Usado nos testes (a RPC é a aplicação real) e disponível para preview na UI.
+// ---------------------------------------------------------------------------
+
+export interface DiscoveryRow {
+  adAccountId: string;
+  clientId: string;
+  /** null quando a conexão que descobriu a conta foi removida. */
+  connectionId: string | null;
+  isLinked: boolean;
+}
+
+export interface LinkTransferPlan {
+  /** ids barrados: linkados a OUTRO cliente. Se não vazio, a RPC aborta tudo. */
+  blocked: Array<{ adAccountId: string; ownedByClientId: string }>;
+  /** ids pedidos que não estão na descoberta da conexão-alvo. RPC aborta. */
+  unknown: string[];
+  /** linhas de conexões antigas do MESMO cliente a soltar (is_linked=false). */
+  releaseFromOtherConnections: Array<{
+    adAccountId: string;
+    connectionId: string | null;
+  }>;
+  /** ids que ficam is_linked=true na conexão-alvo. */
+  link: string[];
+  /** ids da conexão-alvo hoje linkados que saem da seleção (is_linked=false). */
+  unlinkOnTarget: string[];
+}
+
+export function planLinkTransfer(args: {
+  requestedIds: readonly string[];
+  clientId: string;
+  connectionId: string;
+  /** TODAS as linhas de descoberta (todos os clientes e conexões). */
+  rows: readonly DiscoveryRow[];
+}): LinkTransferPlan {
+  const { clientId, connectionId, rows } = args;
+  const requested = [...new Set(args.requestedIds)];
+
+  const targetRows = rows.filter(
+    (r) => r.clientId === clientId && r.connectionId === connectionId,
+  );
+  const targetIds = new Set(targetRows.map((r) => r.adAccountId));
+
+  const linkedElsewhere = new Map<string, string>();
+  for (const r of rows) {
+    if (r.isLinked && r.clientId !== clientId) {
+      linkedElsewhere.set(r.adAccountId, r.clientId);
+    }
+  }
+
+  const blocked: LinkTransferPlan["blocked"] = [];
+  const unknown: string[] = [];
+  const link: string[] = [];
+  const releaseFromOtherConnections: LinkTransferPlan["releaseFromOtherConnections"] =
+    [];
+
+  for (const id of requested) {
+    if (linkedElsewhere.has(id)) {
+      blocked.push({ adAccountId: id, ownedByClientId: linkedElsewhere.get(id)! });
+      continue;
+    }
+    if (!targetIds.has(id)) {
+      unknown.push(id);
+      continue;
+    }
+    link.push(id);
+    for (const r of rows) {
+      if (
+        r.adAccountId === id &&
+        r.clientId === clientId &&
+        r.connectionId !== connectionId &&
+        r.isLinked
+      ) {
+        releaseFromOtherConnections.push({
+          adAccountId: id,
+          connectionId: r.connectionId,
+        });
+      }
+    }
+  }
+
+  const requestedSet = new Set(requested);
+  const unlinkOnTarget = targetRows
+    .filter((r) => r.isLinked && !requestedSet.has(r.adAccountId))
+    .map((r) => r.adAccountId);
+
+  return {
+    blocked,
+    unknown,
+    releaseFromOtherConnections,
+    link,
+    unlinkOnTarget,
+  };
+}
+
 export interface LinkSelectionDiff {
   toLink: string[];
   toUnlink: string[];

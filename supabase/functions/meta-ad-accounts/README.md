@@ -18,7 +18,7 @@ descriptografa o token (só em memória).
 | `{ "action": "discover", "clientId": "<uuid>" }` | descriptografa o token, `GET /me/adaccounts` (paginado), upsert idempotente em `meta_ad_accounts`. |
 | `{ "action": "link", "clientId": "<uuid>", "linkAdAccountIds": ["act_123", …] }` | define `is_linked` das contas escolhidas. Barra conta de outro cliente. |
 
-Resposta 200: `{ "status": "ok", "accounts": [ { adAccountId, name, accountStatus, currency, timezoneName, timezoneOffsetUtc, businessId, businessName, isLinked, syncEnabled } ] }` — **sem token**.
+Resposta 200: `{ "status": "ok", "accounts": [ { adAccountId, name, accountStatus, currency, timezoneName, businessId, businessName, isLinked, syncEnabled } ] }` — **sem token**. (O offset UTC não é persistido; deriva-se de `timezoneName` no app.)
 
 Erros: `401 unauthorized`, `403 forbidden`, `400 bad_request`,
 `409 not_connected | no_connection_secret | token_revoked | insufficient_permission | account_linked_elsewhere`,

@@ -35,7 +35,6 @@ function coerceAccounts(value: unknown): ClientAdAccount[] {
       accountStatus: num(r.accountStatus),
       currency: str(r.currency),
       timezoneName: str(r.timezoneName),
-      timezoneOffsetUtc: num(r.timezoneOffsetUtc),
       businessId: str(r.businessId),
       businessName: str(r.businessName),
       isLinked: r.isLinked === true,

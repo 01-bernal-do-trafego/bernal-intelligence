@@ -17,9 +17,12 @@ export interface DiscoveredAdAccount {
   /** Código numérico da Meta (1 = ativa). `null` se ausente. */
   accountStatus: number | null;
   currency: string | null;
+  /**
+   * Fuso IANA da conta (ex.: "America/Sao_Paulo"). É a ÚNICA fonte de fuso que
+   * persistimos — o offset numérico é derivado sob demanda (lib/meta/timezone.ts),
+   * nunca armazenado (varia com horário de verão e não é sempre inteiro).
+   */
   timezoneName: string | null;
-  /** Offset UTC em horas, truncado para inteiro (coluna é `integer`). */
-  timezoneOffsetUtc: number | null;
   businessId: string | null;
   businessName: string | null;
 }
@@ -90,7 +93,6 @@ export function parseAdAccountNode(node: unknown): DiscoveredAdAccount | null {
     accountStatus: intOrNull(n.account_status),
     currency: str(n.currency),
     timezoneName: str(n.timezone_name),
-    timezoneOffsetUtc: intOrNull(n.timezone_offset_hours_utc),
     businessId: business ? str(business.id) : null,
     businessName: business ? str(business.name) : null,
   };

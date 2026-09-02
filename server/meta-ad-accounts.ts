@@ -20,7 +20,6 @@ function toClientAdAccount(row: Record<string, unknown>): ClientAdAccount | null
     accountStatus: num(row.account_status),
     currency: str(row.currency),
     timezoneName: str(row.timezone_name),
-    timezoneOffsetUtc: num(row.timezone_offset_utc),
     businessId: str(row.business_id),
     businessName: str(row.business_name),
     isLinked: row.is_linked === true,
@@ -43,7 +42,7 @@ export const listMetaAdAccounts = cache(
       const { data, error } = await supabase
         .from("meta_ad_accounts")
         .select(
-          "ad_account_id, account_name, account_status, currency, timezone_name, timezone_offset_utc, business_id, business_name, is_linked, sync_enabled, updated_at",
+          "ad_account_id, account_name, account_status, currency, timezone_name, business_id, business_name, is_linked, sync_enabled, updated_at",
         )
         .eq("client_id", clientId)
         .order("updated_at", { ascending: false });

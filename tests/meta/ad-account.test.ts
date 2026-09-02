@@ -13,7 +13,7 @@ const node = (over: Record<string, unknown> = {}) => ({
   account_status: 1,
   currency: "BRL",
   timezone_name: "America/Sao_Paulo",
-  timezone_offset_hours_utc: -3,
+  timezone_offset_hours_utc: -3, // presente no retorno da Meta, mas NÃO persistido
   business: { id: "bm_9", name: "BM Atacado" },
   ...over,
 });
@@ -29,24 +29,26 @@ describe("normalizeAdAccountId", () => {
 });
 
 describe("parseAdAccountNode", () => {
-  it("uma conta — mapeia todos os campos", () => {
-    expect(parseAdAccountNode(node())).toEqual({
+  it("uma conta — mapeia os campos persistidos (sem offset numérico)", () => {
+    const parsed = parseAdAccountNode(node());
+    expect(parsed).toEqual({
       adAccountId: "act_1001",
       name: "Conta Principal",
       accountStatus: 1,
       currency: "BRL",
       timezoneName: "America/Sao_Paulo",
-      timezoneOffsetUtc: -3,
       businessId: "bm_9",
       businessName: "BM Atacado",
     });
+    expect(parsed).not.toHaveProperty("timezoneOffsetUtc");
   });
 
-  it("trunca offset fracionário e tolera status como string", () => {
+  it("ignora timezone_offset_hours_utc (mesmo fracionário) — não persistimos offset", () => {
     const r = parseAdAccountNode(
       node({ timezone_offset_hours_utc: 5.5, account_status: "2" }),
     );
-    expect(r?.timezoneOffsetUtc).toBe(5);
+    expect(r).not.toHaveProperty("timezoneOffsetUtc");
+    expect(r?.timezoneName).toBe("America/Sao_Paulo");
     expect(r?.accountStatus).toBe(2);
   });
 
@@ -58,7 +60,6 @@ describe("parseAdAccountNode", () => {
       accountStatus: 1,
       currency: null,
       timezoneName: null,
-      timezoneOffsetUtc: null,
       businessId: null,
       businessName: null,
     });
