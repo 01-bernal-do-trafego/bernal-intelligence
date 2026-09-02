@@ -24,7 +24,14 @@ function totals(over: Partial<MetricTotals> = {}): MetricTotals {
     video_3s_views: null,
     video_thruplays: null,
     video_avg_time_watched: null,
-    actions: { leads: 50, conversations: 20, purchases: 8, registrations: 12 },
+    actions: {
+      leads: 50,
+      messaging_conversations_started: 20,
+      messaging_contacts_total: 26,
+      messaging_contacts_new: 14,
+      purchases: 8,
+      registrations: 12,
+    },
     actionValues: { revenue: 3200 },
     ...over,
   };
@@ -47,14 +54,16 @@ describe("sync grava só métricas CANÔNICAS (não `results`)", () => {
     action_values: [{ action_type: "omni_purchase", value: "1400" }],
   };
 
-  it("conversations / leads / purchases canônicas são armazenadas", () => {
+  it("mensageria / leads / purchases canônicas são armazenadas", () => {
     for (const level of ["account", "campaign", "adset", "ad"] as const) {
       const row = normalizeInsightRow(rawAd, { level, adAccountId: "act_555" })!;
-      expect(row.actions.conversations).toBe(42);
+      expect(row.actions.messaging_conversations_started).toBe(42);
       expect(row.actions.leads).toBe(40);
       expect(row.actions.purchases).toBe(7); // prioridade: omni_purchase (não 14)
       expect(row.actionValues.revenue).toBe(1400);
       expect("results" in row.actions).toBe(false);
+      // não grava mais um `conversations` genérico combinado
+      expect("conversations" in row.actions).toBe(false);
     }
   });
 
@@ -67,8 +76,10 @@ describe("sync grava só métricas CANÔNICAS (não `results`)", () => {
 });
 
 describe("results resolvido EM LEITURA a partir de result_metric", () => {
-  it("result_metric = conversations -> results = conversations", () => {
-    expect(canonicalMetricForResult("conversations")).toBe("conversations");
+  it("result_metric = conversations (legado) -> results = conversas iniciadas", () => {
+    expect(canonicalMetricForResult("conversations")).toBe(
+      "messaging_conversations_started",
+    );
     expect(resolveResults(totals(), "conversations")).toBe(20);
   });
   it("result_metric = leads -> results = leads", () => {
@@ -78,16 +89,36 @@ describe("results resolvido EM LEITURA a partir de result_metric", () => {
     expect(resolveResults(totals(), "purchases")).toBe(8);
   });
 
+  it("mensageria: os 3 tipos resolvem métricas SEPARADAS (não aliases)", () => {
+    expect(canonicalMetricForResult("messaging_conversations_started")).toBe(
+      "messaging_conversations_started",
+    );
+    expect(canonicalMetricForResult("messaging_contacts_total")).toBe(
+      "messaging_contacts_total",
+    );
+    expect(canonicalMetricForResult("messaging_contacts_new")).toBe(
+      "messaging_contacts_new",
+    );
+    const t = totals();
+    expect(resolveResults(t, "messaging_conversations_started")).toBe(20);
+    expect(resolveResults(t, "messaging_contacts_total")).toBe(26);
+    expect(resolveResults(t, "messaging_contacts_new")).toBe(14);
+  });
+
   it("mudar result_metric muda results SEM novo sync (mesmos totals)", () => {
     const t = totals(); // dados fixos, como se já sincronizados
-    expect(resolveResults(t, "conversations")).toBe(20);
+    expect(resolveResults(t, "messaging_conversations_started")).toBe(20);
+    expect(resolveResults(t, "messaging_contacts_total")).toBe(26);
+    expect(resolveResults(t, "messaging_contacts_new")).toBe(14);
     expect(resolveResults(t, "leads")).toBe(50);
     expect(resolveResults(t, "purchases")).toBe(8);
   });
 
   it("cost_per_result recalcula com a nova config (spend / resultado)", () => {
     const t = totals({ spend: 1000 });
-    expect(resolveCostPerResult(t, "conversations")).toBeCloseTo(1000 / 20, 6); // 50
+    expect(resolveCostPerResult(t, "messaging_conversations_started")).toBeCloseTo(1000 / 20, 6); // 50
+    expect(resolveCostPerResult(t, "messaging_contacts_total")).toBeCloseTo(1000 / 26, 6);
+    expect(resolveCostPerResult(t, "messaging_contacts_new")).toBeCloseTo(1000 / 14, 6);
     expect(resolveCostPerResult(t, "leads")).toBeCloseTo(1000 / 50, 6); // 20
     expect(resolveCostPerResult(t, "purchases")).toBeCloseTo(1000 / 8, 6); // 125
   });

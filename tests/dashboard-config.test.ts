@@ -156,7 +156,15 @@ describe("migração v1 -> v2", () => {
 
 describe("catálogos de métrica e visualização", () => {
   it("métricas sem fonte ficam marcadas requiresMeta", () => {
-    const future = ["purchases", "cpa", "revenue", "roas", "conversations", "cost_per_conversation"];
+    const future = [
+      "purchases",
+      "cpa",
+      "revenue",
+      "roas",
+      "conversations",
+      "cost_per_conversation",
+      "messaging_conversations_started",
+    ];
     for (const key of future) {
       expect(CHART_METRIC_CATALOG.find((m) => m.key === key)?.requiresMeta).toBe(true);
     }

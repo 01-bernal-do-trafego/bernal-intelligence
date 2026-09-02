@@ -26,10 +26,12 @@ interface PageProps {
 const CONV_LABEL: Record<string, string> = {
   results: "Resultados",
   cost_per_result: "Custo por resultado",
+  messaging_conversations_started: "Conversas iniciadas",
+  messaging_contacts_total: "Total de contatos",
+  messaging_contacts_new: "Novos contatos",
+  cost_per_conversation: "Custo por conversa iniciada",
   leads: "Leads",
   cpl: "CPL",
-  conversations: "Conversas",
-  cost_per_conversation: "Custo por conversa",
   purchases: "Compras",
   cpa: "CPA",
   revenue: "Receita",
@@ -85,6 +87,7 @@ export default async function MetaDataPage({ params, searchParams }: PageProps) 
     account,
     lastRun,
     period,
+    periodSynced,
     totals,
     counts,
     campaigns,
@@ -147,6 +150,7 @@ export default async function MetaDataPage({ params, searchParams }: PageProps) 
         <Field
           label={`Período · ${periodLabel(overview.preset)}`}
           value={period.dateFrom && period.dateTo ? `${period.dateFrom} → ${period.dateTo}` : "—"}
+          sub={periodSynced ? undefined : "ainda não sincronizado"}
         />
         <Field
           label="Atribuição"
@@ -171,6 +175,16 @@ export default async function MetaDataPage({ params, searchParams }: PageProps) 
       <div>
         <SyncMetaButton clientId={client.id} />
       </div>
+
+      {overview.hasData && !periodSynced && (
+        <p className="rounded-lg border border-warning/40 bg-warning/10 px-4 py-3 text-sm text-warning">
+          O período <span className="font-medium">{periodLabel(overview.preset)}</span>{" "}
+          ({period.dateFrom} → {period.dateTo}) ainda não tem agregado
+          sincronizado. Os números abaixo ficam vazios até rodar{" "}
+          <span className="font-medium">Sincronizar Meta</span>. O intervalo
+          mostrado é o do preset selecionado, não de outro período.
+        </p>
+      )}
 
       {!overview.hasData ? (
         <p className="rounded-lg border border-border bg-surface px-4 py-6 text-sm text-muted">

@@ -56,14 +56,27 @@ export const ACTION_METRIC_SPECS: readonly ActionMetricSpec[] = [
     combine: "priority",
     note: "`lead` já agrega formulários on-Meta + offsite; os outros são o mesmo evento por outro pipe.",
   },
+  // Mensageria: 3 eventos DISTINTOS (evidência real Atacado do Chinelo +
+  // Ads Manager: total=661 "Total de contatos", first_reply=499 "Novos
+  // contatos", started_7d=620 "Conversas iniciadas"). NÃO são aliases —
+  // cada métrica mapeia 1:1 para UM evento (lista de 1 -> sem combinação).
   {
-    metricId: "conversations",
-    actionTypes: [
-      "onsite_conversion.messaging_conversation_started_7d",
-      "onsite_conversion.total_messaging_connection",
-    ],
+    metricId: "messaging_conversations_started",
+    actionTypes: ["onsite_conversion.messaging_conversation_started_7d"],
     combine: "priority",
-    note: "mesma conversa de mensagem, granularidades diferentes.",
+    note: "conversas iniciadas nos últimos 7 dias.",
+  },
+  {
+    metricId: "messaging_contacts_total",
+    actionTypes: ["onsite_conversion.total_messaging_connection"],
+    combine: "priority",
+    note: "total de contatos de mensagem (Ads Manager: 'Total de contatos').",
+  },
+  {
+    metricId: "messaging_contacts_new",
+    actionTypes: ["onsite_conversion.messaging_first_reply"],
+    combine: "priority",
+    note: "primeira resposta = novo contato (Ads Manager: 'Novos contatos').",
   },
   {
     metricId: "registrations",
@@ -134,10 +147,13 @@ export const RESULT_METRIC_ACTION_TYPES: Readonly<
     "onsite_conversion.lead_grouped",
   ],
   purchases: ["omni_purchase", "purchase", "offsite_conversion.fct.purchase"],
-  conversations: [
+  // `conversations` (legado) resolve como "conversas iniciadas".
+  conversations: ["onsite_conversion.messaging_conversation_started_7d"],
+  messaging_conversations_started: [
     "onsite_conversion.messaging_conversation_started_7d",
-    "onsite_conversion.total_messaging_connection",
   ],
+  messaging_contacts_total: ["onsite_conversion.total_messaging_connection"],
+  messaging_contacts_new: ["onsite_conversion.messaging_first_reply"],
   registrations: [
     "complete_registration",
     "offsite_conversion.fct.complete_registration",

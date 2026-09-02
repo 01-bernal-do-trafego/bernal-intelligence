@@ -268,7 +268,12 @@ const DEFINITIONS: readonly MetricDefinition[] = [
   },
   conversion("leads", "Leads"),
   conversion("purchases", "Compras", { dashboardSurfaces: CARD_CHART }),
-  conversion("conversations", "Conversas", { dashboardSurfaces: CARD_CHART }),
+  // Mensageria: 3 métricas DISTINTAS (não aliases) — cada uma = 1 action_type.
+  conversion("messaging_conversations_started", "Conversas iniciadas", { dashboardSurfaces: CARD_CHART }),
+  conversion("messaging_contacts_total", "Total de contatos", { dashboardSurfaces: HIDDEN }),
+  conversion("messaging_contacts_new", "Novos contatos", { dashboardSurfaces: HIDDEN }),
+  // `conversations` (legado / compat) = ponteiro para "conversas iniciadas".
+  formula("conversations", "Conversas", "number", "higher_is_better", { op: "identity", of: "messaging_conversations_started" }, { aggregation: "sum", dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true }),
   conversion("registrations", "Cadastros"),
   conversion("appointments", "Agendamentos"),
   conversion("add_to_cart", "Adições ao carrinho"),
@@ -399,10 +404,12 @@ export function isConfigDrivenMetric(id: string): boolean {
   return getMetricDefinition(id)?.configDriven === true;
 }
 
-/** Métricas de conversão CANÔNICAS da Meta (persistidas pelo sync). */
+/** Métricas de conversão CANÔNICAS da Meta (persistidas pelo sync, 1:1 com um action_type). */
 export const CANONICAL_CONVERSION_METRIC_IDS: readonly string[] = [
   "leads",
-  "conversations",
+  "messaging_conversations_started",
+  "messaging_contacts_total",
+  "messaging_contacts_new",
   "purchases",
   "registrations",
   "appointments",

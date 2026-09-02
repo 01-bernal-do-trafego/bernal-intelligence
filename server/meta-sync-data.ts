@@ -6,6 +6,7 @@ import { computeMetric, type MetricTotals } from "@/lib/metrics/compute";
 import {
   buildConversionRows,
   conversionTotalsFromRow,
+  CONVERSION_METRIC_IDS,
   describeEvents,
   resultMetricSource,
   type ConversionMetricRow,
@@ -20,7 +21,8 @@ import {
   META_ATTRIBUTION_LEGACY_WINDOW,
   META_ATTRIBUTION_QUERY_VALUES,
 } from "@/lib/meta/config";
-import { parsePeriod, type PeriodPreset } from "@/lib/date-range";
+import { type PeriodPreset } from "@/lib/date-range";
+import { resolveValidationPeriod } from "@/lib/meta/validation-period";
 import type { ResultMetricType } from "@/types/domain";
 
 const UUID_RE =
@@ -111,6 +113,8 @@ export interface MetaValidationOverview {
     errorText: string | null;
   } | null;
   period: { dateFrom: string | null; dateTo: string | null };
+  /** existe agregado sincronizado para o preset selecionado? */
+  periodSynced: boolean;
   attributionWindow: string | null;
   totals: MetaValidationTotals;
   counts: { campaigns: number; adsets: number; ads: number };
@@ -138,18 +142,9 @@ function buildTotals(row: Record<string, unknown> | null): MetaValidationTotals 
   };
 }
 
-const CONV_ORDER = [
-  "results",
-  "cost_per_result",
-  "leads",
-  "cpl",
-  "conversations",
-  "cost_per_conversation",
-  "purchases",
-  "cpa",
-  "revenue",
-  "roas",
-];
+// MESMA ordem/conjunto da validação de conversões (sem `conversations`
+// genérico — mensageria são 3 métricas distintas).
+const CONV_ORDER: readonly string[] = CONVERSION_METRIC_IDS;
 
 /**
  * Tudo para a área administrativa `/clients/[id]/meta-data` do cliente — lido
@@ -161,13 +156,16 @@ export const getMetaValidationOverview = cache(
     clientId: string,
     presetInput?: string,
   ): Promise<MetaValidationOverview> => {
-    const preset: PeriodPreset = parsePeriod(presetInput ?? "last_30d");
+    // MESMO default do seletor (DateRangePicker também chama `parsePeriod`) —
+    // sem divergência. O fuso real da conta entra depois da query.
+    const preset: PeriodPreset = resolveValidationPeriod(presetInput, null).preset;
     const empty: MetaValidationOverview = {
       hasData: false,
       preset,
       account: null,
       lastRun: null,
       period: { dateFrom: null, dateTo: null },
+      periodSynced: false,
       attributionWindow: null,
       totals: buildTotals(null),
       counts: { campaigns: 0, adsets: 0, ads: 0 },
@@ -186,7 +184,7 @@ export const getMetaValidationOverview = cache(
         await Promise.all([
           supabase
             .from("meta_ad_accounts")
-            .select("ad_account_id, account_name, currency, last_sync_at, last_sync_status")
+            .select("ad_account_id, account_name, currency, timezone_name, last_sync_at, last_sync_status")
             .eq("client_id", clientId)
             .eq("is_linked", true)
             .order("last_sync_at", { ascending: false })
@@ -229,6 +227,15 @@ export const getMetaValidationOverview = cache(
       const acct = acctRes.data as Record<string, unknown> | null;
       const run = runRes.data as Record<string, unknown> | null;
       const accTot = accTotRes.data as Record<string, unknown> | null;
+
+      // Intervalo do preset selecionado (fuso da conta) — TÍTULO/janela
+      // quando o preset ainda não tem agregado sincronizado. NUNCA cai no
+      // horizonte diário do run (~30d, não corresponde ao seletor).
+      const { fallback: presetRange } = resolveValidationPeriod(
+        presetInput,
+        str(acct?.timezone_name),
+      );
+      const periodSynced = Boolean(accTot);
 
       const rmRaw = (dcfgRes.data as { result_metric?: unknown } | null)?.result_metric;
       const resultType: ResultMetricType =
@@ -364,9 +371,10 @@ export const getMetaValidationOverview = cache(
             }
           : null,
         period: {
-          dateFrom: str(accTot?.date_from) ?? str(run?.date_from),
-          dateTo: str(accTot?.date_to) ?? str(run?.date_to),
+          dateFrom: str(accTot?.date_from) ?? presetRange.start,
+          dateTo: str(accTot?.date_to) ?? presetRange.end,
         },
+        periodSynced,
         attributionWindow: str(accTot?.attribution_window),
         totals: buildTotals(accTot),
         counts: {

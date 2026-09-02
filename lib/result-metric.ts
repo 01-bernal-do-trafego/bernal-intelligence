@@ -25,6 +25,24 @@ export const RESULT_METRIC_PRESETS: Record<ResultMetricType, ResultMetricConfig>
       costLabel: "Custo por conversa",
       behavior: "higher_is_better",
     },
+    messaging_conversations_started: {
+      type: "messaging_conversations_started",
+      resultLabel: "Conversas iniciadas",
+      costLabel: "Custo por conversa iniciada",
+      behavior: "higher_is_better",
+    },
+    messaging_contacts_total: {
+      type: "messaging_contacts_total",
+      resultLabel: "Total de contatos",
+      costLabel: "Custo por contato",
+      behavior: "higher_is_better",
+    },
+    messaging_contacts_new: {
+      type: "messaging_contacts_new",
+      resultLabel: "Novos contatos",
+      costLabel: "Custo por novo contato",
+      behavior: "higher_is_better",
+    },
     registrations: {
       type: "registrations",
       resultLabel: "Cadastros",

@@ -25,7 +25,11 @@ export const RESULT_METRIC_CANONICAL: Readonly<
 > = {
   leads: "leads",
   purchases: "purchases",
-  conversations: "conversations",
+  // `conversations` (legado) aponta para "conversas iniciadas".
+  conversations: "messaging_conversations_started",
+  messaging_conversations_started: "messaging_conversations_started",
+  messaging_contacts_total: "messaging_contacts_total",
+  messaging_contacts_new: "messaging_contacts_new",
   registrations: "registrations",
   appointments: "appointments",
   results: null,

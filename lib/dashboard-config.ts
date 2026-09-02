@@ -22,6 +22,9 @@ export const RESULT_METRIC_TYPES: readonly ResultMetricType[] = [
   "leads",
   "purchases",
   "conversations",
+  "messaging_conversations_started",
+  "messaging_contacts_total",
+  "messaging_contacts_new",
   "registrations",
   "appointments",
   "results",
@@ -32,6 +35,9 @@ export const RESULT_METRIC_TYPE_LABEL: Record<ResultMetricType, string> = {
   leads: "Leads",
   purchases: "Compras",
   conversations: "Conversas",
+  messaging_conversations_started: "Conversas iniciadas",
+  messaging_contacts_total: "Total de contatos",
+  messaging_contacts_new: "Novos contatos",
   registrations: "Cadastros",
   appointments: "Agendamentos",
   results: "Resultados",
@@ -94,6 +100,10 @@ export const CHART_METRIC_CATALOG: readonly ChartMetricEntry[] = [
   { key: "revenue", label: "Receita", context: "time_series", format: "currency", behavior: "higher_is_better", requiresMeta: true },
   { key: "roas", label: "ROAS", context: "time_series", format: "decimal", behavior: "higher_is_better", requiresMeta: true },
   { key: "conversations", label: "Conversas", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
+  { key: "messaging_conversations_started", label: "Conversas iniciadas", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
+  // `messaging_contacts_total` / `messaging_contacts_new` NÃO entram como
+  // card/gráfico avulso — são selecionáveis só como "resultado principal"
+  // (result_metric) e aparecem na validação /meta-data. Registry: HIDDEN.
   { key: "cost_per_conversation", label: "Custo por conversa", context: "time_series", format: "currency", behavior: "lower_is_better", requiresMeta: true },
 ];
 
@@ -210,6 +220,8 @@ export const CARD_CATALOG: readonly CatalogEntry[] = [
   { key: "revenue", label: "Receita", requiresMeta: true },
   { key: "roas", label: "ROAS", requiresMeta: true },
   { key: "conversations", label: "Conversas", requiresMeta: true },
+  { key: "messaging_conversations_started", label: "Conversas iniciadas", requiresMeta: true },
+  // total/novos contatos: só via result_metric (Registry HIDDEN), não card avulso.
   { key: "cost_per_conversation", label: "Custo por conversa", requiresMeta: true },
 ];
 

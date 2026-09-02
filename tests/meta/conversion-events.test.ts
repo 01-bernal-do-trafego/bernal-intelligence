@@ -98,9 +98,31 @@ describe("conversionTotalsFromRow + computeMetric — dupla contagem", () => {
     expect(computeMetric("cpl", t)).toBeCloseTo(20, 6);
   });
 
-  it("custo por conversa = spend/conversations", () => {
-    const t = conversionTotalsFromRow(periodicRow({ spend: 420, actions: { conversations: 42 } }));
+  it("custo por conversa = spend / conversas iniciadas", () => {
+    const t = conversionTotalsFromRow(
+      periodicRow({ spend: 420, actions: { messaging_conversations_started: 42 } }),
+    );
     expect(computeMetric("cost_per_conversation", t)).toBeCloseTo(10, 6);
+  });
+
+  it("re-resolve a partir de raw_actions: mensageria = 3 métricas DISTINTAS", () => {
+    // números reais Atacado do Chinelo (Ads Manager: 661 / 499; started_7d 620).
+    const t = conversionTotalsFromRow(
+      periodicRow({
+        spend: 1240,
+        actions: {}, // linha antiga sem os metricIds novos
+        raw_actions: {
+          "onsite_conversion.messaging_conversation_started_7d": 620,
+          "onsite_conversion.total_messaging_connection": 661,
+          "onsite_conversion.messaging_first_reply": 499,
+        },
+      }),
+    );
+    expect(computeMetric("messaging_conversations_started", t)).toBe(620);
+    expect(computeMetric("messaging_contacts_total", t)).toBe(661);
+    expect(computeMetric("messaging_contacts_new", t)).toBe(499);
+    // `conversations` genérico = identidade de "conversas iniciadas"
+    expect(computeMetric("conversations", t)).toBe(620);
   });
 
   it("ROAS = revenue/spend", () => {
@@ -131,21 +153,24 @@ describe("conversionTotalsFromRow + computeMetric — dupla contagem", () => {
 });
 
 describe("buildConversionRows — Métrica · Valor · Fonte", () => {
+  const rawActions = {
+    omni_purchase: 7,
+    purchase: 7,
+    lead: 40,
+    "onsite_conversion.messaging_conversation_started_7d": 12,
+    "onsite_conversion.total_messaging_connection": 20,
+    "onsite_conversion.messaging_first_reply": 9,
+  };
   const t = conversionTotalsFromRow(
     periodicRow({
       spend: 700,
-      actions: { purchases: 7, leads: 40, conversations: 12 },
-      action_values: { revenue: 2800 },
+      raw_actions: rawActions,
+      raw_action_values: { omni_purchase: 2800 },
     }),
   );
   const rows = buildConversionRows({
     totals: t,
-    rawActions: {
-      omni_purchase: 7,
-      purchase: 7,
-      lead: 40,
-      "onsite_conversion.messaging_conversation_started_7d": 12,
-    },
+    rawActions,
     rawActionValues: { omni_purchase: 2800 },
     resultType: "purchases",
   });
@@ -154,10 +179,23 @@ describe("buildConversionRows — Métrica · Valor · Fonte", () => {
   it("fonte da contagem = primeiro alias presente (prioridade)", () => {
     expect(byId.get("purchases")).toMatchObject({ value: 7, source: "omni_purchase" });
     expect(byId.get("leads")).toMatchObject({ value: 40, source: "lead" });
-    expect(byId.get("conversations")).toMatchObject({
+  });
+
+  it("mensageria: 3 linhas distintas, cada uma com sua fonte", () => {
+    expect(byId.get("messaging_conversations_started")).toMatchObject({
       value: 12,
       source: "onsite_conversion.messaging_conversation_started_7d",
     });
+    expect(byId.get("messaging_contacts_total")).toMatchObject({
+      value: 20,
+      source: "onsite_conversion.total_messaging_connection",
+    });
+    expect(byId.get("messaging_contacts_new")).toMatchObject({
+      value: 9,
+      source: "onsite_conversion.messaging_first_reply",
+    });
+    // não existe linha `conversations` genérica na validação
+    expect(byId.has("conversations")).toBe(false);
   });
 
   it("receita usa action_value do alias prioritário", () => {
@@ -198,6 +236,23 @@ describe("result_metric por cliente", () => {
       }),
     ).toBe("onsite_conversion.messaging_conversation_started_7d");
     expect(resultMetricSource("purchases", { purchase: 7 })).toBe("purchase");
+  });
+
+  it("cada tipo de mensageria tem fonte própria", () => {
+    const raw = {
+      "onsite_conversion.messaging_conversation_started_7d": 620,
+      "onsite_conversion.total_messaging_connection": 661,
+      "onsite_conversion.messaging_first_reply": 499,
+    };
+    expect(resultMetricSource("messaging_conversations_started", raw)).toBe(
+      "onsite_conversion.messaging_conversation_started_7d",
+    );
+    expect(resultMetricSource("messaging_contacts_total", raw)).toBe(
+      "onsite_conversion.total_messaging_connection",
+    );
+    expect(resultMetricSource("messaging_contacts_new", raw)).toBe(
+      "onsite_conversion.messaging_first_reply",
+    );
   });
 
   it("result_metric indisponível => fonte null (não substitui por outra)", () => {

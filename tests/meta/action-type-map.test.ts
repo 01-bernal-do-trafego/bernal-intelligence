@@ -20,9 +20,31 @@ describe("ACTION_METRIC_SPECS", () => {
     expect(bernalMetricForAction("omni_purchase")).toBe("purchases");
     expect(
       bernalMetricForAction("onsite_conversion.messaging_conversation_started_7d"),
-    ).toBe("conversations");
+    ).toBe("messaging_conversations_started");
+    expect(
+      bernalMetricForAction("onsite_conversion.total_messaging_connection"),
+    ).toBe("messaging_contacts_total");
+    expect(
+      bernalMetricForAction("onsite_conversion.messaging_first_reply"),
+    ).toBe("messaging_contacts_new");
     expect(bernalMetricForAction("landing_page_view")).toBe("landing_page_views");
     expect(bernalMetricForAction("link_click")).toBe("link_clicks");
+  });
+
+  it("mensageria: 3 eventos DISTINTOS, cada um 1:1 (não aliases entre si)", () => {
+    // evidência real (Atacado do Chinelo) + Ads Manager: 661 / 620 / 499.
+    const ids = [
+      "messaging_conversations_started",
+      "messaging_contacts_total",
+      "messaging_contacts_new",
+    ];
+    for (const id of ids) {
+      expect(actionTypesForMetric(id)).toHaveLength(1);
+      expect(combineForMetric(id)).toBe("priority");
+    }
+    // nenhum action_type de um alimenta o outro
+    const allTypes = ids.flatMap(actionTypesForMetric);
+    expect(new Set(allTypes).size).toBe(3);
   });
 
   it("action_type desconhecido -> undefined (vira unmapped no normalizer)", () => {
@@ -118,14 +140,35 @@ describe("resolveActionMetric — anti dupla contagem", () => {
     expect(resolveActionMetric(actionTypesForMetric("leads"), present, "priority")).toBe(40);
   });
 
-  it("aliases de CONVERSA: usa a granularidade prioritária, não soma", () => {
+  it("mensageria NÃO é alias: cada métrica resolve seu próprio evento", () => {
     const present = new Map([
-      ["onsite_conversion.messaging_conversation_started_7d", 42],
-      ["onsite_conversion.total_messaging_connection", 55],
+      ["onsite_conversion.messaging_conversation_started_7d", 620],
+      ["onsite_conversion.total_messaging_connection", 661],
+      ["onsite_conversion.messaging_first_reply", 499],
     ]);
     expect(
-      resolveActionMetric(actionTypesForMetric("conversations"), present, "priority"),
-    ).toBe(42);
+      resolveActionMetric(
+        actionTypesForMetric("messaging_conversations_started"),
+        present,
+        "priority",
+      ),
+    ).toBe(620);
+    expect(
+      resolveActionMetric(
+        actionTypesForMetric("messaging_contacts_total"),
+        present,
+        "priority",
+      ),
+    ).toBe(661);
+    expect(
+      resolveActionMetric(
+        actionTypesForMetric("messaging_contacts_new"),
+        present,
+        "priority",
+      ),
+    ).toBe(499);
+    // o `conversations` genérico NÃO é um spec de action (é fórmula/identidade)
+    expect(actionTypesForMetric("conversations")).toEqual([]);
   });
 
   it("omni_purchase presente vence purchase e offsite (mesmo com valores diferentes)", () => {
@@ -146,6 +189,9 @@ describe("RESULT_METRIC_ACTION_TYPES", () => {
       "leads",
       "purchases",
       "conversations",
+      "messaging_conversations_started",
+      "messaging_contacts_total",
+      "messaging_contacts_new",
       "registrations",
       "appointments",
       "results",
@@ -160,6 +206,33 @@ describe("RESULT_METRIC_ACTION_TYPES", () => {
     expect(RESULT_METRIC_ACTION_TYPES.purchases.length).toBeGreaterThan(0);
     expect(RESULT_METRIC_ACTION_TYPES.results).toEqual([]);
     expect(RESULT_METRIC_ACTION_TYPES.custom).toEqual([]);
+  });
+
+  it("cada tipo de mensageria aponta para 1 action_type próprio", () => {
+    expect(RESULT_METRIC_ACTION_TYPES.messaging_conversations_started).toEqual([
+      "onsite_conversion.messaging_conversation_started_7d",
+    ]);
+    expect(RESULT_METRIC_ACTION_TYPES.messaging_contacts_total).toEqual([
+      "onsite_conversion.total_messaging_connection",
+    ]);
+    expect(RESULT_METRIC_ACTION_TYPES.messaging_contacts_new).toEqual([
+      "onsite_conversion.messaging_first_reply",
+    ]);
+    // `conversations` legado resolve como "conversas iniciadas"
+    expect(RESULT_METRIC_ACTION_TYPES.conversations).toEqual([
+      "onsite_conversion.messaging_conversation_started_7d",
+    ]);
+  });
+
+  it("resolveResultMetric separa os 3 tipos de mensageria com os mesmos totais", () => {
+    const present = new Map([
+      ["onsite_conversion.messaging_conversation_started_7d", 620],
+      ["onsite_conversion.total_messaging_connection", 661],
+      ["onsite_conversion.messaging_first_reply", 499],
+    ]);
+    expect(resolveResultMetric("messaging_conversations_started", present)).toBe(620);
+    expect(resolveResultMetric("messaging_contacts_total", present)).toBe(661);
+    expect(resolveResultMetric("messaging_contacts_new", present)).toBe(499);
   });
 
   it("resolveResultMetric usa prioridade (não soma lead + offsite lead)", () => {

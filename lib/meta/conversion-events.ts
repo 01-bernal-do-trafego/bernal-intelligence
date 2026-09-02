@@ -11,9 +11,12 @@
  */
 
 import {
+  ACTION_METRIC_SPECS,
+  ACTION_VALUE_METRIC_SPECS,
   actionTypesForMetric,
   bernalMetricForAction,
   bernalValueMetricForAction,
+  resolveActionMetric,
   valueActionTypesForMetric,
 } from "./action-type-map";
 import { RESULT_METRIC_ACTION_TYPES } from "./action-type-map";
@@ -95,10 +98,12 @@ export interface ConversionMetricRow {
 export const CONVERSION_METRIC_IDS = [
   "results",
   "cost_per_result",
+  "messaging_conversations_started",
+  "messaging_contacts_total",
+  "messaging_contacts_new",
+  "cost_per_conversation",
   "leads",
   "cpl",
-  "conversations",
-  "cost_per_conversation",
   "purchases",
   "cpa",
   "revenue",
@@ -106,8 +111,39 @@ export const CONVERSION_METRIC_IDS = [
 ] as const;
 
 /**
+ * Resolve as métricas Bernal a partir dos `action_type` CRUS — fonte de
+ * verdade. Reflete o `ACTION_METRIC_SPECS` ATUAL mesmo em linhas sincronizadas
+ * antes de uma mudança de mapeamento (sem re-sync).
+ */
+function resolveCanonicalFromRaw(
+  rawActions: Record<string, number>,
+  rawActionValues: Record<string, number>,
+): { actions: Record<string, number>; actionValues: Record<string, number> } {
+  const toMap = (o: Record<string, number>) =>
+    new Map<string, number>(Object.entries(o));
+  const ra = toMap(rawActions);
+  const rav = toMap(rawActionValues);
+  const actions: Record<string, number> = {};
+  for (const spec of ACTION_METRIC_SPECS) {
+    const v = resolveActionMetric(spec.actionTypes, ra, spec.combine);
+    if (v !== null) actions[spec.metricId] = v;
+  }
+  const actionValues: Record<string, number> = {};
+  for (const spec of ACTION_VALUE_METRIC_SPECS) {
+    const v = resolveActionMetric(spec.actionTypes, rav, spec.combine);
+    if (v !== null) actionValues[spec.metricId] = v;
+  }
+  return { actions, actionValues };
+}
+
+/**
  * `MetricTotals` para o `computeMetric` a partir de uma linha de
  * `meta_insights_periodic` (fonte autoritativa do período).
+ *
+ * As métricas Bernal são RE-RESOLVIDAS a partir de `raw_actions`/
+ * `raw_action_values` (fonte de verdade) — assim `/meta-data` reflete o
+ * mapeamento ATUAL mesmo em linhas sincronizadas antes de uma mudança. Se
+ * não houver crus, cai no `actions`/`action_values` persistido.
  */
 export function conversionTotalsFromRow(row: {
   spend?: unknown;
@@ -118,6 +154,8 @@ export function conversionTotalsFromRow(row: {
   frequency?: unknown;
   actions?: unknown;
   action_values?: unknown;
+  raw_actions?: unknown;
+  raw_action_values?: unknown;
 }): MetricTotals {
   const n = (v: unknown): number | null =>
     typeof v === "number" && Number.isFinite(v)
@@ -125,6 +163,13 @@ export function conversionTotalsFromRow(row: {
       : typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v))
         ? Number(v)
         : null;
+  const rawActions = asNumberMap(row.raw_actions);
+  const rawActionValues = asNumberMap(row.raw_action_values);
+  const hasRaw =
+    Object.keys(rawActions).length > 0 || Object.keys(rawActionValues).length > 0;
+  const resolved = hasRaw
+    ? resolveCanonicalFromRaw(rawActions, rawActionValues)
+    : { actions: asNumberMap(row.actions), actionValues: asNumberMap(row.action_values) };
   return {
     spend: n(row.spend),
     impressions: n(row.impressions),
@@ -135,8 +180,8 @@ export function conversionTotalsFromRow(row: {
     video_3s_views: null,
     video_thruplays: null,
     video_avg_time_watched: null,
-    actions: asNumberMap(row.actions),
-    actionValues: asNumberMap(row.action_values),
+    actions: resolved.actions,
+    actionValues: resolved.actionValues,
   };
 }
 

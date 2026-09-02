@@ -26,7 +26,10 @@ interface Spec {
 export const ACTION_METRIC_SPECS: Spec[] = [
   { metricId: "purchases", actionTypes: ["omni_purchase", "purchase", "offsite_conversion.fct.purchase"], combine: "priority" },
   { metricId: "leads", actionTypes: ["lead", "offsite_conversion.fct.lead", "onsite_conversion.lead_grouped"], combine: "priority" },
-  { metricId: "conversations", actionTypes: ["onsite_conversion.messaging_conversation_started_7d", "onsite_conversion.total_messaging_connection"], combine: "priority" },
+  // Mensageria: 3 eventos DISTINTOS (não aliases) — cada métrica = 1 action_type.
+  { metricId: "messaging_conversations_started", actionTypes: ["onsite_conversion.messaging_conversation_started_7d"], combine: "priority" },
+  { metricId: "messaging_contacts_total", actionTypes: ["onsite_conversion.total_messaging_connection"], combine: "priority" },
+  { metricId: "messaging_contacts_new", actionTypes: ["onsite_conversion.messaging_first_reply"], combine: "priority" },
   { metricId: "registrations", actionTypes: ["complete_registration", "offsite_conversion.fct.complete_registration"], combine: "priority" },
   { metricId: "appointments", actionTypes: ["schedule", "onsite_conversion.schedule_total"], combine: "priority" },
   { metricId: "add_to_cart", actionTypes: ["omni_add_to_cart", "add_to_cart", "offsite_conversion.fct.add_to_cart"], combine: "priority" },
