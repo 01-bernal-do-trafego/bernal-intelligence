@@ -20,7 +20,7 @@ export type LastSyncStatus =
   | "failed"
   | "running"
   | "never";
-export type CreativesStatus = "ok" | "partial" | "failed" | "unknown" | "never";
+export type CreativesStatus = "ok" | "partial" | "failed" | "unknown";
 
 /** stages essenciais de PERFORMANCE (creatives/ad_creatives NÃO entram). */
 export const ESSENTIAL_STAGES: readonly string[] = [
@@ -114,19 +114,30 @@ export function latestBatch(runs: readonly SyncRunLite[]): SyncRunLite[] {
 }
 
 export interface CreativeStagePerAccount {
-  present: boolean; // o run tinha stats.creatives?
+  /** o run tinha `stats.creatives` num formato reconhecido (objeto)? */
+  present: boolean;
   upserted: number;
   minimalOnly: number;
   failed: number;
   degraded: boolean;
 }
 
-/** Agrega o creatives health entre as contas do batch (conservador). */
+/**
+ * Agrega o creatives health entre as contas do batch — baseado na SAÚDE da
+ * etapa, NÃO na quantidade de inserts (em steady-state incremental o normal é
+ * `upserted = 0` com tudo `known_skipped`, e isso é `ok`).
+ *
+ *   unknown  -> nenhuma conta tem `stats.creatives` reconhecido
+ *   failed   -> há falha E nenhuma conta salvou nada (falha completa)
+ *   partial  -> alguma conta com failed>0 / minimal_only>0 / degraded
+ *   ok       -> stats existe e NENHUMA conta tem failed/minimal_only/degraded
+ *               (independe de `upserted`)
+ */
 export function aggregateCreativesStatus(
   per: readonly CreativeStagePerAccount[],
 ): CreativesStatus {
   const present = per.filter((p) => p.present);
-  if (present.length === 0) return "never";
+  if (present.length === 0) return "unknown";
   const anyIssue = present.some(
     (p) => p.failed > 0 || p.minimalOnly > 0 || p.degraded,
   );
@@ -135,5 +146,5 @@ export function aggregateCreativesStatus(
     const anyHardFail = present.some((p) => p.upserted === 0 && p.failed > 0);
     return nothingSaved && anyHardFail ? "failed" : "partial";
   }
-  return present.some((p) => p.upserted > 0) ? "ok" : "unknown";
+  return "ok";
 }

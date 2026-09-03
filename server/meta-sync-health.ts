@@ -44,7 +44,7 @@ export const getClientSyncHealth = cache(
           "never") as PerformanceStatus,
         lastSyncAt: str(r.last_sync_at),
         lastSyncStatus: (str(r.last_sync_status) ?? "never") as LastSyncStatus,
-        creativesStatus: (str(r.creatives_status) ?? "never") as CreativesStatus,
+        creativesStatus: (str(r.creatives_status) ?? "unknown") as CreativesStatus,
       };
     } catch {
       return null;

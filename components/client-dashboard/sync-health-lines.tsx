@@ -29,7 +29,6 @@ const CRE: Record<string, { label: string; tone: string }> = {
   partial: { label: "Parcial", tone: "text-warning" },
   failed: { label: "Falha", tone: "text-negative" },
   unknown: { label: "—", tone: "text-muted" },
-  never: { label: "Ainda não sincronizados", tone: "text-muted" },
 };
 
 /**

@@ -65,10 +65,13 @@ describe("aggregateCreativesStatus — agregado entre contas do batch", () => {
   it("todas ok -> ok", () => {
     expect(aggregateCreativesStatus([cre({ upserted: 5 }), cre({ upserted: 9 })])).toBe("ok");
   });
-  it("nenhuma tinha stats.creatives -> never", () => {
+  it("nenhuma tinha stats.creatives -> unknown", () => {
     expect(aggregateCreativesStatus([cre({ present: false }), cre({ present: false })])).toBe(
-      "never",
+      "unknown",
     );
+  });
+  it("incremental steady-state: known_skipped, upserted 0, sem erro -> ok", () => {
+    expect(aggregateCreativesStatus([cre({ upserted: 0 })])).toBe("ok");
   });
   it("degraded=true numa conta -> partial", () => {
     expect(aggregateCreativesStatus([cre({ upserted: 5, degraded: true })])).toBe("partial");
