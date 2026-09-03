@@ -509,7 +509,9 @@ Deno.serve(async (req: Request) => {
         ];
 
         // ---- INDIVIDUAL-FIRST: GET /{id} FULL -> isolamento de fields -> MINIMAL.
-        //      `?ids=` foi abandonado (Meta code 100). Erro NUNCA é engolido.
+        //      `?ids=` não é usado p/ creatives nesta V1 (hipótese: multi-get
+        //      não confiável p/ AdCreative — v6 deu Meta code 100). Erro NUNCA
+        //      é engolido; o run confirma e nomeia o field se FULL/id falhar.
         const fetchResult = await planCreativeFetch({
           ids: creativeIds,
           transport: graphCreativeTransport(graph),

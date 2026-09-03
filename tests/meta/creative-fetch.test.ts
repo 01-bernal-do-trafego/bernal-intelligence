@@ -38,7 +38,7 @@ function transport(
 
 const has = (fields: string, f: string) => fields.split(",").includes(f);
 
-describe("planCreativeFetch — INDIVIDUAL-FIRST (?ids= abandonado)", () => {
+describe("planCreativeFetch — INDIVIDUAL-FIRST (sem ?ids= para creatives)", () => {
   it("FULL individual funciona para todos -> 61 full, 0 minimal, done", async () => {
     const t = transport((id) => obj({ id, name: `c${id}`, object_story_spec: { x: 1 } }));
     const ids = Array.from({ length: 61 }, (_, i) => `id${i}`);

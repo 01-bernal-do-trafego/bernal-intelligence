@@ -5,9 +5,13 @@
  *   - `GET /?ids=…` (multi-get) FULL   -> Meta code 100
  *   - `GET /?ids=…` (multi-get) MINIMAL -> Meta code 100
  *   - `GET /{id}` (individual)  MINIMAL -> 61/61 OK
- * Como o MESMO field-set mínimo funciona por id mas falha no `?ids=`, o
- * problema é o **multi-get `?ids=` para AdCreative**, não os fields nem a
- * permissão. Então: `?ids=` foi ABANDONADO para creatives nesta V1.
+ * O MESMO field-set mínimo funciona por id mas falhou no `?ids=`. HIPÓTESE
+ * (não confirmada até o próximo teste real): o multi-get `?ids=` não é um
+ * caminho de leitura confiável para AdCreative. Não sabemos ainda se FULL por
+ * id funciona nem qual field/subcode exato causou o code 100.
+ * Decisão desta V1: `?ids=` não é mais usado para creatives — busca
+ * individual-first, com isolamento progressivo de fields quando FULL por id
+ * falha (para nomear o suspeito no próximo run).
  *
  * Por creative_id (com teto de chamadas):
  *   A) GET /{id}?fields=<FULL>            -> full_fetched

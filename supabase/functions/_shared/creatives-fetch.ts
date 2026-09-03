@@ -3,8 +3,10 @@
  * `lib/meta/creative-fetch.ts` do app (a versão do app é a TESTADA — manter
  * idênticas).
  *
- * `?ids=` multi-get foi ABANDONADO para AdCreative: falhava com Meta code 100
- * em FULL e em MINIMAL, mas o MESMO MINIMAL funciona por id. Então:
+ * `?ids=` multi-get não é mais usado para AdCreative nesta V1: na sync v6
+ * falhou com Meta code 100 em FULL e em MINIMAL, mas o MESMO MINIMAL funciona
+ * por id. HIPÓTESE (não confirmada) de que o multi-get não é confiável p/
+ * AdCreative — o próximo run confirma e, se FULL por id falhar, nomeia o field.
  *   A) GET /{id}?fields=<FULL>  ->  B) isolamento de fields + GET /{id}?<MINIMAL>.
  * `token_revoked` aborta. Erro nunca engolido.
  */
