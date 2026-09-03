@@ -271,6 +271,56 @@ export async function listEdge(
 }
 
 /**
+ * Busca vários objetos por ID de uma vez: `GET /{version}/?ids=a,b,c&fields=…`.
+ * A resposta é um mapa `{ "<id>": {...} }` (não `data[]`). Divide em lotes de
+ * `chunkSize` (padrão 50). Token sempre no header. Erros são classificados como
+ * nas demais chamadas; um lote que falha NÃO derruba os outros — as chaves
+ * ausentes simplesmente não voltam.
+ */
+export async function getObjectsByIds(
+  input: GraphConfig & {
+    token: string;
+    ids: string[];
+    fields: string;
+    chunkSize?: number;
+  },
+): Promise<Map<string, Record<string, unknown>>> {
+  const out = new Map<string, Record<string, unknown>>();
+  const uniq = [...new Set(input.ids.filter((x) => typeof x === "string" && x))];
+  const size = Math.min(Math.max(input.chunkSize ?? 50, 1), 50);
+  const base = `${input.graphBase.replace(/\/+$/, "")}/${input.version}/`;
+
+  for (let i = 0; i < uniq.length; i += size) {
+    const chunk = uniq.slice(i, i + size);
+    const url = new URL(base);
+    url.searchParams.set("ids", chunk.join(","));
+    url.searchParams.set("fields", input.fields);
+
+    const res = await fetch(url, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${input.token}` },
+    });
+    const body = (await res.json().catch(() => null)) as
+      | Record<string, unknown>
+      | null;
+
+    if (!res.ok || !body) {
+      const kind = classifyGraphError(body);
+      // token revogado deve abortar tudo; um lote com id inválido não.
+      if (kind === "token_revoked") throw new GraphApiError(kind);
+      continue;
+    }
+
+    for (const [id, obj] of Object.entries(body)) {
+      if (obj && typeof obj === "object" && !Array.isArray(obj)) {
+        out.set(id, obj as Record<string, unknown>);
+      }
+    }
+  }
+  return out;
+}
+
+/**
  * Campos por nível: base + conversões (`actions`/`action_values`).
  *
  * ATRIBUIÇÃO: NÃO pedimos `action_attribution_windows` nem

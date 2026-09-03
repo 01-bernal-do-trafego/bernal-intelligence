@@ -9,12 +9,14 @@
  *   POST { clientId }
  *     -> para CADA conta vinculada (is_linked) do cliente:
  *        acquire (trava de concorrência) -> estrutura (campaigns/adsets/ads)
- *        -> insights diários (time_increment=1) e agregados (sem time_increment)
- *        nos níveis account/campaign/adset/ad, últimos 30 dias -> release.
+ *        -> creatives (batch por id) + relação ad↔creative (LOG DE OBSERVAÇÃO:
+ *           first_seen/last_seen são datas de sincronização, histórico nunca é
+ *           apagado) -> insights diários (time_increment=1) e agregados
+ *           nos níveis account/campaign/adset/ad -> release.
  *
  * Ordem de privilégio: valida JWT -> agência -> can_access_client -> só então
  * lê segredos e descriptografa o token (em memória). Token/App Secret NUNCA
- * retornados nem logados. Não sincroniza criativos nesta etapa.
+ * retornados nem logados.
  */
 
 import { createClient } from "npm:@supabase/supabase-js@2";
@@ -24,6 +26,7 @@ import { openToken } from "../_shared/crypto.ts";
 import {
   GraphApiError,
   GraphPaginationOverflow,
+  getObjectsByIds,
   listEdge,
   listInsights,
 } from "../_shared/graph.ts";
@@ -32,6 +35,7 @@ import {
   toPeriodicRows,
   type InsightLevel,
 } from "../_shared/insights.ts";
+import { CREATIVE_API_FIELDS, creativeDbRow } from "../_shared/creatives.ts";
 
 const GRAPH_BASE = Deno.env.get("META_GRAPH_BASE") ?? "https://graph.facebook.com";
 const GRAPH_VERSION = Deno.env.get("META_GRAPH_VERSION") ?? "v26.0";
@@ -446,6 +450,131 @@ Deno.serve(async (req: Request) => {
         if (e instanceof GraphApiError && e.kind === "token_revoked") fatal = "token_revoked";
         stages.push({
           stage: "ads",
+          outcome: e instanceof GraphPaginationOverflow ? "skipped" : "error",
+        });
+      }
+    }
+
+    // ---- creatives + relação ad↔creative (log de observação) --------
+    // Busca detalhe dos creatives referenciados por ads ATUAIS **e** dos
+    // históricos já observados em meta_ad_creatives (para atribuir janelas
+    // passadas ao creative certo). Batch por ids, sem repetir o mesmo creative.
+    if (!fatal) {
+      try {
+        const [adRows, relRows] = await Promise.all([
+          admin
+            .from("meta_ads")
+            .select("id, ad_id, creative_id, updated_time")
+            .eq("ad_account_ref", acc.id),
+          admin
+            .from("meta_ad_creatives")
+            .select("ad_id, creative_id")
+            .eq("client_id", clientId),
+        ]);
+        const ads = (adRows.data ?? []) as Array<{
+          id: string;
+          ad_id: string;
+          creative_id: string | null;
+        }>;
+        const adRefByMetaId = new Map(ads.map((a) => [a.ad_id, a.id]));
+        const currentPairs = ads
+          .filter((a) => a.creative_id)
+          .map((a) => ({ ad_id: a.ad_id, creative_id: a.creative_id as string }));
+        // históricos só desta conta (evita reescrever ad_account_ref de creative
+        // de outra conta do mesmo cliente).
+        const accountAdIds = new Set(ads.map((a) => a.ad_id));
+        const knownPairs = ((relRows.data ?? []) as Array<{
+          ad_id: string;
+          creative_id: string;
+        }>).filter((p) => accountAdIds.has(p.ad_id));
+
+        const creativeIds = [
+          ...new Set([
+            ...currentPairs.map((p) => p.creative_id),
+            ...knownPairs.map((p) => p.creative_id),
+          ]),
+        ];
+
+        let cPages = 0;
+        if (creativeIds.length) {
+          const details = await getObjectsByIds({
+            ...graph,
+            ids: creativeIds,
+            fields: CREATIVE_API_FIELDS,
+          });
+          cPages = Math.ceil(creativeIds.length / 50);
+          const creativeRows = [...details.values()]
+            .map((raw) =>
+              creativeDbRow(raw, {
+                clientId,
+                adAccountRef: acc.id,
+                adAccountId: acc.ad_account_id,
+              }),
+            )
+            .filter((r): r is NonNullable<typeof r> => r !== null);
+          if (creativeRows.length) {
+            const { error } = await admin
+              .from("meta_creatives")
+              .upsert(creativeRows, { onConflict: "creative_id" });
+            if (error) throw new Error(`upsert creatives: ${error.message}`);
+          }
+          stages.push({
+            stage: "creatives",
+            outcome: "done",
+            rows: creativeRows.length,
+            pages: cPages,
+          });
+        } else {
+          stages.push({ stage: "creatives", outcome: "done", rows: 0, pages: 0 });
+        }
+
+        // relação ad↔creative: LOG DE OBSERVAÇÃO. Nunca apaga histórico;
+        // só cria/atualiza last_seen do par visto. Idempotente por (ad_id, creative_id).
+        const { data: creativeRefRows } = await admin
+          .from("meta_creatives")
+          .select("id, creative_id")
+          .eq("ad_account_ref", acc.id);
+        const creativeRefByMetaId = new Map(
+          ((creativeRefRows ?? []) as Array<{ id: string; creative_id: string }>).map(
+            (r) => [r.creative_id, r.id],
+          ),
+        );
+        const now = new Date().toISOString();
+        const relPayload = currentPairs
+          .map((p) => {
+            const adRef = adRefByMetaId.get(p.ad_id);
+            const creativeRef = creativeRefByMetaId.get(p.creative_id);
+            if (!adRef || !creativeRef) return null;
+            return {
+              client_id: clientId,
+              ad_ref: adRef,
+              creative_ref: creativeRef,
+              ad_id: p.ad_id,
+              creative_id: p.creative_id,
+              // first_seen só entra no INSERT (default now()); no update mantém.
+              last_seen: now,
+              updated_at: now,
+            };
+          })
+          .filter((r): r is NonNullable<typeof r> => r !== null);
+        if (relPayload.length) {
+          const { error } = await admin
+            .from("meta_ad_creatives")
+            .upsert(relPayload, {
+              onConflict: "ad_id,creative_id",
+              ignoreDuplicates: false,
+            });
+          if (error) throw new Error(`upsert ad_creatives: ${error.message}`);
+        }
+        stages.push({
+          stage: "ad_creatives",
+          outcome: "done",
+          rows: relPayload.length,
+        });
+      } catch (e) {
+        if (e instanceof GraphApiError && e.kind === "token_revoked") fatal = "token_revoked";
+        stages.push({
+          stage: "creatives",
           outcome: e instanceof GraphPaginationOverflow ? "skipped" : "error",
         });
       }
