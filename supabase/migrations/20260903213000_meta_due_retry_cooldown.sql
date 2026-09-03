@@ -85,19 +85,33 @@ comment on function public.meta_clients_due_for_sync(integer, interval, interval
 
 -- -----------------------------------------------------------------------------
 -- Bloco cron.schedule ATUALIZADO (continua COMENTADO — aplicar esta migration
--- NÃO ativa o Cron). Trocar <PROJECT_REF> pelo ref real ao ativar.
+-- NÃO ativa o Cron).
+--
+-- Antes de ativar, cadastrar no Vault (hoje só `meta_sync_cron_secret` existe):
+--   select vault.create_secret('<project url>',     'project_url');
+--   select vault.create_secret('<publishable key>', 'publishable_key');
+--   -- `meta_sync_cron_secret` JÁ existe — NÃO recriar nem alterar.
+--
+-- Duas camadas de auth, distintas e não substituíveis:
+--   apikey (publishable_key)  -> libera a chamada no gateway do projeto
+--   x-meta-sync-cron-secret   -> autentica o SCHEDULER dentro da função
+--                                (comparação em tempo constante)
+-- Nenhuma chave literal aqui: URL/apikey/secret vêm todos do Vault.
 -- -----------------------------------------------------------------------------
 -- select cron.schedule(
 --   'meta-auto-sync-dispatch',
 --   '*/15 * * * *',
 --   $cron$
 --   select net.http_post(
---     url     := 'https://<PROJECT_REF>.supabase.co/functions/v1/meta-sync-scheduled',
+--     url     := (select decrypted_secret from vault.decrypted_secrets
+--                  where name = 'project_url')
+--                || '/functions/v1/meta-sync-scheduled',
 --     headers := jsonb_build_object(
---       'content-type', 'application/json',
---       'x-meta-sync-cron-secret',
---       (select decrypted_secret from vault.decrypted_secrets
---         where name = 'meta_sync_cron_secret')
+--       'Content-Type', 'application/json',
+--       'apikey', (select decrypted_secret from vault.decrypted_secrets
+--                   where name = 'publishable_key'),
+--       'x-meta-sync-cron-secret', (select decrypted_secret from vault.decrypted_secrets
+--                                    where name = 'meta_sync_cron_secret')
 --     ),
 --     body    := jsonb_build_object('clientId', d.client_id::text)
 --   )

@@ -95,6 +95,48 @@ describe("cooldown — restrições de segurança / escopo", () => {
   });
 });
 
+describe("template do cron.schedule (comentado) — apikey + Vault", () => {
+  // só as linhas comentadas do bloco do cron
+  const tpl = sql
+    .split("\n")
+    .filter((l) => l.trim().startsWith("--"))
+    .join("\n");
+
+  it("net.http_post continua só em linha comentada", () => {
+    for (const line of sql.split("\n")) {
+      if (line.toLowerCase().includes("net.http_post")) {
+        expect(line.trim().startsWith("--")).toBe(true);
+      }
+    }
+  });
+  it("header apikey presente, lido de publishable_key no Vault", () => {
+    expect(tpl).toMatch(/'apikey',\s*\(select\s+decrypted_secret\s+from\s+vault\.decrypted_secrets/i);
+    expect(tpl).toMatch(/where\s+name\s*=\s*'publishable_key'/);
+  });
+  it("x-meta-sync-cron-secret presente, lido de meta_sync_cron_secret no Vault", () => {
+    expect(tpl).toMatch(
+      /'x-meta-sync-cron-secret',\s*\(select\s+decrypted_secret\s+from\s+vault\.decrypted_secrets/i,
+    );
+    expect(tpl).toMatch(/where\s+name\s*=\s*'meta_sync_cron_secret'/);
+  });
+  it("URL vem do Vault (project_url), sem host literal", () => {
+    expect(tpl).toMatch(/where\s+name\s*=\s*'project_url'/);
+    expect(tpl).toContain("/functions/v1/meta-sync-scheduled");
+    // sem https://<algo>.supabase.co literal no arquivo
+    expect(sql).not.toMatch(/https:\/\/[a-z0-9]{6,}\.supabase\.co/i);
+  });
+  it("apikey NÃO substitui o cron secret — os dois headers coexistem", () => {
+    expect(tpl).toContain("'apikey'");
+    expect(tpl).toContain("'x-meta-sync-cron-secret'");
+  });
+  it("nenhuma publishable/anon/service key literal no arquivo", () => {
+    expect(sql).not.toMatch(/\b(eyJ[A-Za-z0-9_-]{10,}|sb_publishable_[A-Za-z0-9]{6,}|sb_secret_[A-Za-z0-9]{6,})\b/);
+  });
+  it("não há apikey com valor string literal (só via Vault)", () => {
+    expect(tpl).not.toMatch(/'apikey'\s*,\s*'[^']+'/);
+  });
+});
+
 describe("migration aplicada 20260903193000 permanece intacta", () => {
   it("continua com a assinatura de 2 argumentos", () => {
     const applied = read("20260903193000_meta_auto_sync.sql").toLowerCase();
