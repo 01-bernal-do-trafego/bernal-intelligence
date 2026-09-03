@@ -99,13 +99,19 @@ export interface CreativeSyncStatus {
   runAt: string | null;
   runStatus: string | null;
   attempted: number;
+  fullFetched: number;
+  minimalOnly: number;
   upserted: number;
   failed: number;
-  minimalFieldsUsed: boolean;
-  perIdFallbackUsed: boolean;
   linked: number;
   linkSkipped: number;
-  errorCodes: { code: number | null; subcode: number | null; type: string | null; userTitle: string | null }[];
+  errorCodes: {
+    code: number | null;
+    subcode: number | null;
+    type: string | null;
+    userTitle: string | null;
+    failingFieldGroup: string | null;
+  }[];
 }
 
 const CREATIVE_SYNC_NEVER: CreativeSyncStatus = {
@@ -113,10 +119,10 @@ const CREATIVE_SYNC_NEVER: CreativeSyncStatus = {
   runAt: null,
   runStatus: null,
   attempted: 0,
+  fullFetched: 0,
+  minimalOnly: 0,
   upserted: 0,
   failed: 0,
-  minimalFieldsUsed: false,
-  perIdFallbackUsed: false,
   linked: 0,
   linkSkipped: 0,
   errorCodes: [],
@@ -142,29 +148,32 @@ function deriveCreativeSync(run: Record<string, unknown> | null): CreativeSyncSt
   const attempted = n(c.attempted);
   const upserted = n(c.upserted);
   const failed = n(c.failed);
-  const degraded = b(c.degraded) || b(c.minimal_fields_used) || b(c.per_id_fallback_used);
+  const minimalOnly = n(c.minimal_only);
+  const degraded = b(c.degraded) || minimalOnly > 0 || failed > 0;
   const errorCodes = Array.isArray(c.error_codes)
     ? (c.error_codes as Record<string, unknown>[]).slice(0, 8).map((e) => ({
         code: typeof e.code === "number" ? e.code : null,
         subcode: typeof e.subcode === "number" ? e.subcode : null,
         type: typeof e.type === "string" ? e.type : null,
         userTitle: typeof e.userTitle === "string" ? e.userTitle : null,
+        failingFieldGroup:
+          typeof e.failingFieldGroup === "string" ? e.failingFieldGroup : null,
       }))
     : [];
   let status: CreativeSyncStatus["status"];
   if (attempted === 0) status = "ok";
   else if (upserted === 0) status = "failed";
-  else if (degraded || failed > 0) status = "degraded";
+  else if (degraded) status = "degraded";
   else status = "ok";
   return {
     status,
     runAt,
     runStatus,
     attempted,
+    fullFetched: n(c.full_fetched),
+    minimalOnly,
     upserted,
     failed,
-    minimalFieldsUsed: b(c.minimal_fields_used),
-    perIdFallbackUsed: b(c.per_id_fallback_used),
     linked: n(ac?.linked),
     linkSkipped: n(ac?.skipped),
     errorCodes,

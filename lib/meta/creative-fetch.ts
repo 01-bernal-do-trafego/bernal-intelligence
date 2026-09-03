@@ -1,12 +1,26 @@
 /**
- * Busca de AdCreative — INDIVIDUAL-FIRST (Edge Function / Deno). Espelho de
- * `lib/meta/creative-fetch.ts` do app (a versão do app é a TESTADA — manter
- * idênticas).
+ * Busca dos detalhes de AdCreative — INDIVIDUAL-FIRST. Módulo PURO.
  *
- * `?ids=` multi-get foi ABANDONADO para AdCreative: falhava com Meta code 100
- * em FULL e em MINIMAL, mas o MESMO MINIMAL funciona por id. Então:
- *   A) GET /{id}?fields=<FULL>  ->  B) isolamento de fields + GET /{id}?<MINIMAL>.
- * `token_revoked` aborta. Erro nunca engolido.
+ * Evidência (Atacado do Chinelo, sync v6):
+ *   - `GET /?ids=…` (multi-get) FULL   -> Meta code 100
+ *   - `GET /?ids=…` (multi-get) MINIMAL -> Meta code 100
+ *   - `GET /{id}` (individual)  MINIMAL -> 61/61 OK
+ * Como o MESMO field-set mínimo funciona por id mas falha no `?ids=`, o
+ * problema é o **multi-get `?ids=` para AdCreative**, não os fields nem a
+ * permissão. Então: `?ids=` foi ABANDONADO para creatives nesta V1.
+ *
+ * Por creative_id (com teto de chamadas):
+ *   A) GET /{id}?fields=<FULL>            -> full_fetched
+ *   B) se A falhar (não-token):
+ *      - isolamento progressivo de grupos de fields (nos primeiros N ids que
+ *        falham) para nomear o field que quebra;
+ *      - GET /{id}?fields=<MINIMAL>       -> minimal_fetched (minimal_only)
+ *      - se MINIMAL também falhar         -> failed
+ *   token_revoked (190 / 102·463) aborta tudo.
+ *
+ * Erro NUNCA engolido: `sanitizeGraphError` extrai só code/subcode/type/
+ * user_title/fbtrace (nada de token/URL/message). Upsert por `creative_id` só
+ * ENRIQUECE as linhas já salvas (zero duplicação).
  */
 
 export const CREATIVE_FIELDS_FULL = [
@@ -39,6 +53,11 @@ export const CREATIVE_FIELDS_MINIMAL = [
   "effective_object_story_id",
 ].join(",");
 
+/**
+ * Grupos ADITIVOS para isolamento progressivo — cada probe pede
+ * `id,name` + união dos grupos até `i`. O 1º grupo que faz a chamada falhar é
+ * o suspeito.
+ */
 export const CREATIVE_FIELD_GROUPS: { name: string; fields: string[] }[] = [
   { name: "base", fields: ["object_type"] },
   { name: "image", fields: ["thumbnail_url", "image_url", "image_hash"] },
@@ -55,6 +74,7 @@ export interface SanitizedGraphError {
   type: string | null;
   userTitle: string | null;
   fbtrace: string | null;
+  /** grupo de fields que a isolação apontou como quebra (quando rodou). */
   failingFieldGroup?: string | null;
 }
 
@@ -63,6 +83,7 @@ export type GraphFetchOutcome =
   | { ok: false; error: SanitizedGraphError };
 
 export interface CreativeTransport {
+  /** GET /{id}?fields=<fields> — devolve o objeto do creative. */
   get(id: string, fields: string): Promise<GraphFetchOutcome>;
 }
 
@@ -71,7 +92,9 @@ export interface CreativeFetchTelemetry {
   full_fetched: number;
   minimal_fetched: number;
   failed: number;
+  /** ids cujo FULL individual funcionou. */
   full_fields_available: number;
+  /** ids salvos só com o field-set mínimo (linha incompleta). */
   minimal_only: number;
   failed_ids: string[];
   degraded: boolean;
@@ -80,6 +103,7 @@ export interface CreativeFetchTelemetry {
 
 export interface CreativeFetchResult {
   objects: Map<string, Record<string, unknown>>;
+  /** creative_ids que vieram apenas com fields mínimos. */
   minimalOnlyIds: Set<string>;
   telemetry: CreativeFetchTelemetry;
   tokenRevoked: boolean;
@@ -90,18 +114,15 @@ const ERROR_CODES_CAP = 12;
 const DEFAULT_CALL_CAP = 400;
 const DEFAULT_ISOLATE_CAP = 3;
 
-// deno-lint-ignore no-explicit-any
-function asRec(v: unknown): Record<string, any> | null {
+function asRec(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v)
-    // deno-lint-ignore no-explicit-any
-    ? (v as Record<string, any>)
+    ? (v as Record<string, unknown>)
     : null;
 }
 
 export function sanitizeGraphError(body: unknown): SanitizedGraphError {
   const e = asRec(asRec(body)?.error);
-  const n = (v: unknown) =>
-    typeof v === "number" && Number.isFinite(v) ? v : null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
   const s = (v: unknown) =>
     typeof v === "string" && v.trim().length > 0 ? v.slice(0, 120) : null;
   return {
@@ -126,12 +147,19 @@ function sameError(a: SanitizedGraphError, b: SanitizedGraphError): boolean {
   );
 }
 
+/**
+ * Isolamento progressivo: `id,name` + grupos aditivos até achar o 1º que
+ * quebra. Devolve o nome do grupo suspeito (ou null se nenhum grupo isolado
+ * falhou — nesse caso a falha não é de field).
+ */
 export async function isolateFailingFieldGroup(
   id: string,
   transport: CreativeTransport,
 ): Promise<{ group: string | null; error: SanitizedGraphError | null; calls: number }> {
   let acc = ["id", "name"];
-  let calls = 1;
+  let calls = 0;
+  // baseline id,name deve funcionar; se nem isso, não é field.
+  calls += 1;
   const baseline = await transport.get(id, acc.join(","));
   if (!baseline.ok) return { group: null, error: baseline.error, calls };
   for (const grp of CREATIVE_FIELD_GROUPS) {
@@ -139,11 +167,7 @@ export async function isolateFailingFieldGroup(
     calls += 1;
     const r = await transport.get(id, acc.join(","));
     if (!r.ok) {
-      return {
-        group: grp.name,
-        error: { ...r.error, failingFieldGroup: grp.name },
-        calls,
-      };
+      return { group: grp.name, error: { ...r.error, failingFieldGroup: grp.name }, calls };
     }
   }
   return { group: null, error: null, calls };
@@ -189,6 +213,7 @@ export async function planCreativeFetch(args: {
     }
   };
   const markFailed = (id: string) => {
+    tel.failed += 1;
     if (tel.failed_ids.length < FAILED_IDS_CAP) tel.failed_ids.push(id);
   };
 
@@ -199,6 +224,7 @@ export async function planCreativeFetch(args: {
       continue;
     }
 
+    // A — FULL individual
     calls += 1;
     const a = await args.transport.get(id, fullFields);
     if (a.ok) {
@@ -214,10 +240,8 @@ export async function planCreativeFetch(args: {
     }
     recordError(a.error);
 
-    if (
-      isolations < isolateCap &&
-      calls + CREATIVE_FIELD_GROUPS.length + 1 <= callCap
-    ) {
+    // isolamento progressivo (só nos primeiros N que falham) para nomear o field
+    if (isolations < isolateCap && calls + CREATIVE_FIELD_GROUPS.length + 1 <= callCap) {
       isolations += 1;
       const iso = await isolateFailingFieldGroup(id, args.transport);
       calls += iso.calls;
@@ -231,6 +255,7 @@ export async function planCreativeFetch(args: {
       }
     }
 
+    // B — MINIMAL individual
     if (calls >= callCap) {
       markFailed(id);
       continue;
@@ -260,8 +285,19 @@ export async function planCreativeFetch(args: {
   return { objects, minimalOnlyIds, telemetry: tel, tokenRevoked };
 }
 
+/* ------------------------------------------------------------------ */
+/* Decisão de outcome dos stages (pura)                               */
+/* ------------------------------------------------------------------ */
+
 export type StageOutcome = "done" | "degraded" | "error";
 
+/**
+ * `creatives`:
+ *   fatal / (esperava ids e obteve 0)          -> error
+ *   algum só com mínimo (linha incompleta)
+ *     ou algum falhou totalmente               -> degraded (=> run partial)
+ *   61 FULL / 61 salvos                         -> done (=> run success)
+ */
 export function creativesStageOutcome(input: {
   attempted: number;
   fetched: number;
@@ -287,51 +323,33 @@ export function linkStageOutcome(input: {
   return "done";
 }
 
+/** Plano de links ad↔creative — SÓ liga creatives REALMENTE salvos. */
 export function planAdCreativeLinks(args: {
   pairs: { adId: string; creativeId: string }[];
-  adRefByMetaId: Map<string, string>;
-  savedCreativeIds: Set<string>;
+  adRefByMetaId: Map<string, string> | Record<string, string>;
+  savedCreativeIds: Set<string> | Iterable<string>;
 }): {
   links: { adId: string; creativeId: string; adRef: string }[];
   skipped: number;
   attempted: number;
 } {
+  const adRef =
+    args.adRefByMetaId instanceof Map
+      ? args.adRefByMetaId
+      : new Map(Object.entries(args.adRefByMetaId));
+  const saved =
+    args.savedCreativeIds instanceof Set
+      ? args.savedCreativeIds
+      : new Set(args.savedCreativeIds);
   const links: { adId: string; creativeId: string; adRef: string }[] = [];
   let skipped = 0;
   for (const p of args.pairs) {
-    const ar = args.adRefByMetaId.get(p.adId);
-    if (!ar || !args.savedCreativeIds.has(p.creativeId)) {
+    const ar = adRef.get(p.adId);
+    if (!ar || !saved.has(p.creativeId)) {
       skipped += 1;
       continue;
     }
     links.push({ adId: p.adId, creativeId: p.creativeId, adRef: ar });
   }
   return { links, skipped, attempted: args.pairs.length };
-}
-
-/* ---- transporte real (fetch) ----------------------------------- */
-
-/** `CreativeTransport` real sobre a Graph API. Token só no header. */
-export function graphCreativeTransport(graph: {
-  graphBase: string;
-  version: string;
-  token: string;
-}): CreativeTransport {
-  const root = `${graph.graphBase.replace(/\/+$/, "")}/${graph.version}`;
-  return {
-    async get(id, fields) {
-      const url = new URL(`${root}/${encodeURIComponent(id)}`);
-      url.searchParams.set("fields", fields);
-      const res = await fetch(url, {
-        method: "GET",
-        headers: { Authorization: `Bearer ${graph.token}` },
-      });
-      const body = (await res.json().catch(() => null)) as unknown;
-      const rec = asRec(body);
-      if (res.ok && rec && !("error" in rec)) {
-        return { ok: true, object: rec };
-      }
-      return { ok: false, error: sanitizeGraphError(body) };
-    },
-  };
 }

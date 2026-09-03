@@ -49,9 +49,16 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
   const currency = account?.currency ?? null;
 
   const csCodes = creativeSync.errorCodes
-    .map((e) => [e.code, e.subcode].filter((x) => x != null).join("·"))
+    .map((e) =>
+      [
+        [e.code, e.subcode].filter((x) => x != null).join("·"),
+        e.failingFieldGroup ? `field: ${e.failingFieldGroup}` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+    )
     .filter(Boolean)
-    .join(", ");
+    .join("; ");
   const creativeSyncBanner:
     | { tone: "warning" | "negative"; text: string }
     | null =
@@ -60,7 +67,7 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
           tone: "negative",
           text:
             `Dados de performance sincronizados. Falha na sincronização dos criativos` +
-            ` (${creativeSync.attempted} tentados, 0 salvos${csCodes ? `; Meta code ${csCodes}` : ""}).` +
+            ` (${creativeSync.attempted} tentados, 0 salvos${csCodes ? `; Meta ${csCodes}` : ""}).` +
             ` Rode Sincronizar Meta novamente.`,
         }
       : creativeSync.status === "degraded"
@@ -69,9 +76,9 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
             text:
               `Dados de performance sincronizados. Criativos sincronizados parcialmente` +
               ` (${creativeSync.upserted}/${creativeSync.attempted} salvos` +
-              `${creativeSync.minimalFieldsUsed ? "; campos completos falharam, usados campos mínimos" : ""}` +
-              `${creativeSync.perIdFallbackUsed ? "; fallback por id" : ""}` +
-              `${csCodes ? `; Meta code ${csCodes}` : ""}).`,
+              `${creativeSync.minimalOnly > 0 ? `; ${creativeSync.minimalOnly} só com campos mínimos` : ""}` +
+              `${creativeSync.failed > 0 ? `; ${creativeSync.failed} falharam` : ""}` +
+              `${csCodes ? `; Meta ${csCodes}` : ""}).`,
           }
         : creativeSync.status === "unknown" && creativeSync.runStatus
           ? {

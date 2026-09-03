@@ -508,7 +508,8 @@ Deno.serve(async (req: Request) => {
           ]),
         ];
 
-        // ---- busca EM CAMADAS (full -> mínimo -> por id). Erro NUNCA é engolido.
+        // ---- INDIVIDUAL-FIRST: GET /{id} FULL -> isolamento de fields -> MINIMAL.
+        //      `?ids=` foi abandonado (Meta code 100). Erro NUNCA é engolido.
         const fetchResult = await planCreativeFetch({
           ids: creativeIds,
           transport: graphCreativeTransport(graph),
@@ -529,6 +530,7 @@ Deno.serve(async (req: Request) => {
         let upserted = 0;
         let creativeUpsertError: string | null = null;
         if (creativeRows.length) {
+          // upsert por creative_id: ENRIQUECE linhas já salvas, zero duplicação.
           const { error } = await admin
             .from("meta_creatives")
             .upsert(creativeRows, { onConflict: "creative_id" });
@@ -541,22 +543,20 @@ Deno.serve(async (req: Request) => {
           outcome: creativesStageOutcome({
             attempted: tel.attempted,
             fetched: fetchResult.objects.size,
-            degraded: tel.degraded || creativeUpsertError != null,
-            failed: tel.failed,
+            minimalOnly: tel.minimal_only,
+            failed: tel.failed + (creativeUpsertError != null ? 1 : 0),
             fatal: Boolean(fatal),
           }),
           rows: upserted,
-          pages: tel.chunks,
           detail: {
             attempted: tel.attempted,
-            chunks: tel.chunks,
             full_fetched: tel.full_fetched,
-            fallback_fetched: tel.fallback_fetched,
-            minimal_fields_used: tel.minimal_fields_used,
-            per_id_fallback_used: tel.per_id_fallback_used,
+            minimal_fetched: tel.minimal_fetched,
             failed: tel.failed,
-            degraded: tel.degraded,
             upserted,
+            full_fields_available: tel.full_fields_available,
+            minimal_only: tel.minimal_only,
+            degraded: tel.degraded,
             error_codes: tel.error_codes,
             failed_ids_sample: tel.failed_ids,
             ...(creativeUpsertError ? { upsert_error: creativeUpsertError } : {}),

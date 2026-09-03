@@ -64,9 +64,9 @@ export interface NormalizedCreative {
 export {
   CREATIVE_FIELDS_FULL,
   CREATIVE_FIELDS_MINIMAL,
-} from "@/lib/meta/creative-batch-fetch";
+} from "@/lib/meta/creative-fetch";
 /** @deprecated use `CREATIVE_FIELDS_FULL` */
-export { CREATIVE_FIELDS_FULL as CREATIVE_API_FIELDS } from "@/lib/meta/creative-batch-fetch";
+export { CREATIVE_FIELDS_FULL as CREATIVE_API_FIELDS } from "@/lib/meta/creative-fetch";
 
 function rec(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v)
