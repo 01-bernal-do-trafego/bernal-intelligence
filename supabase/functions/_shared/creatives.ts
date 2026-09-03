@@ -118,12 +118,22 @@ export interface CreativeDbRow {
   asset_feed_spec: unknown | null;
   raw: unknown;
   synced_at: string;
+  /** só quando o FULL teve sucesso — chave do fetch incremental. */
+  details_fetched_at?: string | null;
 }
 
-/** Payload cru de AdCreative -> linha de `public.meta_creatives`. */
+/**
+ * Payload cru de AdCreative -> linha de `public.meta_creatives`.
+ * `opts.detailsFetchedAt`:
+ *   - string  -> FULL ok, marca a linha como detalhada (grava a coluna);
+ *   - null    -> preserva o valor atual (MINIMAL-only, não rebaixa) — a coluna
+ *               NÃO entra no payload;
+ *   - undefined -> idem null.
+ */
 export function creativeDbRow(
   input: unknown,
   ctx: { clientId: string; adAccountRef: string; adAccountId: string },
+  opts?: { detailsFetchedAt?: string | null },
 ): CreativeDbRow | null {
   const c = rec(input);
   const creativeId = str(c?.id);
@@ -202,5 +212,8 @@ export function creativeDbRow(
     asset_feed_spec: afs ?? null,
     raw: input,
     synced_at: new Date().toISOString(),
+    ...(typeof opts?.detailsFetchedAt === "string"
+      ? { details_fetched_at: opts.detailsFetchedAt }
+      : {}),
   };
 }

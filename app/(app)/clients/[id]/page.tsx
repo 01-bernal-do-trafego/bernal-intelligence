@@ -19,6 +19,7 @@ import {
 } from "@/lib/dashboard-config";
 import { getClientRecord } from "@/server/clients";
 import { getMetaConnection } from "@/server/meta-connection";
+import { getClientSyncHealth } from "@/server/meta-sync-health";
 import { listMetaAdAccounts } from "@/server/meta-ad-accounts";
 import {
   getClientDashboard,
@@ -43,6 +44,7 @@ import { DashboardChart } from "@/components/charts/dashboard-chart";
 import { CampaignsTable } from "@/components/client-dashboard/campaigns-table";
 import { DashboardHeaderActions } from "@/components/client-dashboard/dashboard-header-actions";
 import { DashboardScopeFilters } from "@/components/client-dashboard/dashboard-scope-filters";
+import { SyncHealthLines } from "@/components/client-dashboard/sync-health-lines";
 
 interface ClientDashboardPageProps {
   params: Promise<{ id: string }>;
@@ -106,6 +108,7 @@ export default async function ClientDashboardPage({
   const metaConnected = metaIsUsable(metaConnection.state);
   const metaAdAccounts = metaConnected ? await listMetaAdAccounts(client.id) : [];
   const linkedAdAccounts = metaAdAccounts.filter((a) => a.isLinked);
+  const syncHealth = metaConnected ? await getClientSyncHealth(client.id) : null;
 
   const compare = sp.compare === "1";
   const dashboard = await getClientDashboard({
@@ -218,15 +221,12 @@ export default async function ClientDashboardPage({
       </header>
 
       {dashboard.dataStatus === "real" && (
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-positive/30 bg-positive/10 px-4 py-3 text-sm">
-          <span className="text-positive">
-            Dados reais da Meta Ads
-            {dashboard.lastSyncAt
-              ? ` · sincronizado em ${new Date(dashboard.lastSyncAt).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" })}`
-              : ""}
-            {dashboard.lastSyncStatus === "partial" ? " · última sync parcial" : ""}
-          </span>
-          <SyncMetaButton clientId={client.id} />
+        <div className="flex flex-col gap-3 rounded-lg border border-positive/30 bg-positive/10 px-4 py-3 text-sm">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-positive">Dados reais da Meta Ads</span>
+            <SyncMetaButton clientId={client.id} />
+          </div>
+          <SyncHealthLines health={syncHealth} />
         </div>
       )}
 

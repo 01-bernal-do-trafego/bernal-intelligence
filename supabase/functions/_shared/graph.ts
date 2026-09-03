@@ -246,6 +246,7 @@ export async function listEdge(
       method: "GET",
       headers: { Authorization: `Bearer ${input.token}` },
     });
+    captureRateUsage(res.headers);
     const body = (await res.json().catch(() => null)) as
       | { data?: unknown; paging?: { next?: unknown; cursors?: { after?: unknown } } }
       | null;
@@ -272,6 +273,102 @@ export async function listEdge(
 
 // A busca EM CAMADAS de AdCreative (batch full -> batch mínimo -> por id) com
 // telemetria vive em `_shared/creatives-fetch.ts` (não engole erro Graph).
+
+/* ---- rate usage (best-effort, sanitizado) -------------------------------
+ * Lê os headers oficiais de uso da Meta em cada resposta e guarda só os
+ * PERCENTUAIS MÁXIMOS num acumulador de módulo (uma invocação da Edge Function
+ * = um cliente). Nada de header/token bruto. Se o formato mudar, fica ausente.
+ */
+interface RateUsageSummary {
+  app_max_pct: number;
+  ad_account_max_pct: number;
+  buc_max_pct: number;
+  estimated_time_to_regain_access_max: number;
+  throttled: boolean;
+}
+let rateAcc: RateUsageSummary = {
+  app_max_pct: 0,
+  ad_account_max_pct: 0,
+  buc_max_pct: 0,
+  estimated_time_to_regain_access_max: 0,
+  throttled: false,
+};
+
+export function resetRateUsage(): void {
+  rateAcc = {
+    app_max_pct: 0,
+    ad_account_max_pct: 0,
+    buc_max_pct: 0,
+    estimated_time_to_regain_access_max: 0,
+    throttled: false,
+  };
+}
+export function getRateUsage(): RateUsageSummary {
+  return { ...rateAcc };
+}
+
+function maxPctFromObj(o: unknown): { pct: number; regain: number } {
+  let pct = 0;
+  let regain = 0;
+  const scan = (v: unknown) => {
+    if (!v || typeof v !== "object") return;
+    const r = v as Record<string, unknown>;
+    for (const k of ["call_count", "total_cputime", "total_time"]) {
+      const n = typeof r[k] === "number" ? (r[k] as number) : Number(r[k]);
+      if (Number.isFinite(n) && n > pct) pct = n;
+    }
+    const eg = typeof r.estimated_time_to_regain_access === "number"
+      ? (r.estimated_time_to_regain_access as number)
+      : Number(r.estimated_time_to_regain_access);
+    if (Number.isFinite(eg) && eg > regain) regain = eg;
+  };
+  if (Array.isArray(o)) o.forEach(scan);
+  else if (o && typeof o === "object") {
+    // BUC: { "<act_id>": [ {...} ], ... }
+    for (const v of Object.values(o as Record<string, unknown>)) {
+      if (Array.isArray(v)) v.forEach(scan);
+      else scan(v);
+    }
+    scan(o);
+  }
+  return { pct, regain };
+}
+
+function captureRateUsage(headers: Headers): void {
+  try {
+    const parse = (h: string) => {
+      const raw = headers.get(h);
+      if (!raw) return null;
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return null;
+      }
+    };
+    const app = maxPctFromObj(parse("x-app-usage"));
+    const acct = maxPctFromObj(parse("x-ad-account-usage"));
+    const buc = maxPctFromObj(parse("x-business-use-case-usage"));
+    rateAcc.app_max_pct = Math.max(rateAcc.app_max_pct, app.pct);
+    rateAcc.ad_account_max_pct = Math.max(rateAcc.ad_account_max_pct, acct.pct);
+    rateAcc.buc_max_pct = Math.max(rateAcc.buc_max_pct, buc.pct);
+    rateAcc.estimated_time_to_regain_access_max = Math.max(
+      rateAcc.estimated_time_to_regain_access_max,
+      app.regain,
+      acct.regain,
+      buc.regain,
+    );
+    if (
+      rateAcc.app_max_pct >= 100 ||
+      rateAcc.ad_account_max_pct >= 100 ||
+      rateAcc.buc_max_pct >= 100 ||
+      rateAcc.estimated_time_to_regain_access_max > 0
+    ) {
+      rateAcc.throttled = true;
+    }
+  } catch {
+    // best-effort — nunca derruba o sync
+  }
+}
 
 /**
  * Campos por nível: base + conversões (`actions`/`action_values`).

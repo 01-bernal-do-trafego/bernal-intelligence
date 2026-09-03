@@ -1,0 +1,108 @@
+/**
+ * Saúde de sincronização por cliente. Módulo PURO — espelha o cálculo da view
+ * `public.meta_client_sync_health` (a view é a fonte em produção; isto testa a
+ * lógica de agregação).
+ *
+ * TRÊS EIXOS SEPARADOS:
+ *  - PERFORMANCE FRESHNESS: só a IDADE do último `performance_synced_at` válido
+ *    (stages essenciais todos `done`). Uma tentativa que falhou NÃO envelhece
+ *    dados válidos nem vira "failed".
+ *  - LAST SYNC HEALTH: agregado do BATCH mais recente (N runs, um por conta) —
+ *    não "a última conta que terminou".
+ *  - CREATIVES HEALTH: agregado entre as contas do batch; independente da
+ *    performance.
+ */
+
+export type PerformanceStatus = "fresh" | "stale" | "never";
+export type LastSyncStatus =
+  | "success"
+  | "partial"
+  | "failed"
+  | "running"
+  | "never";
+export type CreativesStatus = "ok" | "partial" | "failed" | "unknown" | "never";
+
+/** stages essenciais de PERFORMANCE (creatives/ad_creatives NÃO entram). */
+export const ESSENTIAL_STAGES: readonly string[] = [
+  "campaigns",
+  "adsets",
+  "ads",
+  "insights_daily_account",
+  "insights_daily_campaign",
+  "insights_daily_adset",
+  "insights_daily_ad",
+  "insights_periodic_account",
+  "insights_periodic_campaign",
+  "insights_periodic_adset",
+  "insights_periodic_ad",
+];
+
+export function essentialStagesComplete(stagesDone: readonly string[]): boolean {
+  const set = new Set(stagesDone);
+  return ESSENTIAL_STAGES.every((s) => set.has(s));
+}
+
+/**
+ * `performance_synced_at` do cliente = a conta ELEGÍVEL mais atrasada.
+ * Qualquer conta sem run essencial-ok (`null`) -> cliente `null` (never).
+ */
+export function performanceSyncedAt(
+  perAccount: readonly (string | null)[],
+): string | null {
+  if (perAccount.length === 0) return null;
+  if (perAccount.some((a) => a == null)) return null;
+  return (perAccount as string[]).reduce((min, a) => (a < min ? a : min));
+}
+
+export function performanceStatus(
+  syncedAt: string | null,
+  now: number = Date.now(),
+  freshHours = 8,
+): PerformanceStatus {
+  if (!syncedAt) return "never";
+  const t = Date.parse(syncedAt);
+  if (!Number.isFinite(t)) return "never";
+  return t >= now - freshHours * 3_600_000 ? "fresh" : "stale";
+}
+
+/**
+ * Status do BATCH inteiro do cliente a partir dos status das N contas:
+ *   algum running -> running
+ *   todos success -> success
+ *   todos error   -> failed
+ *   mistura       -> partial
+ */
+export function aggregateBatchStatus(
+  statuses: readonly string[],
+): LastSyncStatus {
+  if (statuses.length === 0) return "never";
+  if (statuses.includes("running")) return "running";
+  if (statuses.every((s) => s === "success")) return "success";
+  if (statuses.every((s) => s === "error")) return "failed";
+  return "partial";
+}
+
+export interface CreativeStagePerAccount {
+  present: boolean; // o run tinha stats.creatives?
+  upserted: number;
+  minimalOnly: number;
+  failed: number;
+  degraded: boolean;
+}
+
+/** Agrega o creatives health entre as contas do batch (conservador). */
+export function aggregateCreativesStatus(
+  per: readonly CreativeStagePerAccount[],
+): CreativesStatus {
+  const present = per.filter((p) => p.present);
+  if (present.length === 0) return "never";
+  const anyIssue = present.some(
+    (p) => p.failed > 0 || p.minimalOnly > 0 || p.degraded,
+  );
+  if (anyIssue) {
+    const nothingSaved = present.every((p) => p.upserted === 0);
+    const anyHardFail = present.some((p) => p.upserted === 0 && p.failed > 0);
+    return nothingSaved && anyHardFail ? "failed" : "partial";
+  }
+  return present.some((p) => p.upserted > 0) ? "ok" : "unknown";
+}
