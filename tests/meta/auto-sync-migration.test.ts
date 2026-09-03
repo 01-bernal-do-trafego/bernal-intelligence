@@ -95,6 +95,38 @@ describe("elegibilidade centralizada (due == acquire)", () => {
   });
 });
 
+describe("view: edge cases de NULL e batch legado", () => {
+  it("performance_synced_at NÃO usa min() cru — guard explícito de NULL", () => {
+    const view = active.slice(
+      active.indexOf("perf_per_client as ("),
+      active.indexOf("runs_keyed as ("),
+    );
+    // precisa do bool_or/case antes do min
+    expect(view).toMatch(/case[\s\S]*bool_or\(p\.perf_at is null\)[\s\S]*then null[\s\S]*else min\(p\.perf_at\)/);
+  });
+
+  it("runs LEGADOS (sync_batch_id NULL) usam coalesce(sync_batch_id, id) — não somem nem se fundem", () => {
+    const view = active.slice(
+      active.indexOf("runs_keyed as ("),
+      active.indexOf("from perf_per_client pc"),
+    );
+    expect(view).toMatch(/coalesce\(r\.sync_batch_id,\s*r\.id\)\s+as\s+batch_key/);
+    // last_batch NÃO filtra sync_batch_id is not null (senão legado desaparece)
+    expect(view).not.toMatch(/where\s+r?\.?sync_batch_id\s+is\s+not\s+null/);
+    expect(view).toContain("batch_key");
+  });
+
+  it("meta_auto_sync_enabled() lê o estado REAL do scheduler (cron.job), sem tabela nova", () => {
+    expect(active).toContain("create or replace function public.meta_auto_sync_enabled()");
+    const fn = active.slice(active.indexOf("function public.meta_auto_sync_enabled()"));
+    expect(fn).toContain("from cron.job");
+    expect(fn).toContain("jobname = 'meta-auto-sync-dispatch'");
+    expect(fn).toMatch(/grant\s+execute\s+on\s+function\s+public\.meta_auto_sync_enabled\(\)\s+to\s+authenticated/);
+    // nenhuma tabela/coluna nova só p/ o flag
+    expect(active).not.toMatch(/create\s+table[\s\S]*auto_sync/i);
+  });
+});
+
 describe("sync_batch_id + details_fetched_at", () => {
   it("adiciona meta_sync_runs.sync_batch_id", () => {
     expect(active).toMatch(

@@ -19,7 +19,7 @@ import {
 } from "@/lib/dashboard-config";
 import { getClientRecord } from "@/server/clients";
 import { getMetaConnection } from "@/server/meta-connection";
-import { getClientSyncHealth } from "@/server/meta-sync-health";
+import { getAutoSyncEnabled, getClientSyncHealth } from "@/server/meta-sync-health";
 import { listMetaAdAccounts } from "@/server/meta-ad-accounts";
 import {
   getClientDashboard,
@@ -108,7 +108,9 @@ export default async function ClientDashboardPage({
   const metaConnected = metaIsUsable(metaConnection.state);
   const metaAdAccounts = metaConnected ? await listMetaAdAccounts(client.id) : [];
   const linkedAdAccounts = metaAdAccounts.filter((a) => a.isLinked);
-  const syncHealth = metaConnected ? await getClientSyncHealth(client.id) : null;
+  const [syncHealth, autoSyncEnabled] = metaConnected
+    ? await Promise.all([getClientSyncHealth(client.id), getAutoSyncEnabled()])
+    : [null, false];
 
   const compare = sp.compare === "1";
   const dashboard = await getClientDashboard({
@@ -226,7 +228,7 @@ export default async function ClientDashboardPage({
             <span className="text-positive">Dados reais da Meta Ads</span>
             <SyncMetaButton clientId={client.id} />
           </div>
-          <SyncHealthLines health={syncHealth} />
+          <SyncHealthLines health={syncHealth} autoSyncEnabled={autoSyncEnabled} />
         </div>
       )}
 

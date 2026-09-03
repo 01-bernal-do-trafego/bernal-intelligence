@@ -82,6 +82,37 @@ export function aggregateBatchStatus(
   return "partial";
 }
 
+/* ---- identidade da EXECUÇÃO (batch) — inclui runs legados sem sync_batch_id */
+
+export interface SyncRunLite {
+  id: string;
+  syncBatchId: string | null;
+  status: string;
+  startedAt: string;
+}
+
+/**
+ * Chave efetiva da execução: run novo usa `sync_batch_id`; run LEGADO
+ * (pré-migration) usa o próprio `id` -> vira um batch individual (não some,
+ * nem funde com outros legados). Espelha `coalesce(sync_batch_id, id)` da view.
+ */
+export function effectiveBatchKey(r: {
+  id: string;
+  syncBatchId: string | null;
+}): string {
+  return r.syncBatchId ?? r.id;
+}
+
+/** Runs do batch (execução) MAIS RECENTE do cliente. */
+export function latestBatch(runs: readonly SyncRunLite[]): SyncRunLite[] {
+  if (runs.length === 0) return [];
+  const newest = [...runs].sort((a, b) =>
+    a.startedAt < b.startedAt ? 1 : a.startedAt > b.startedAt ? -1 : 0,
+  )[0];
+  const key = effectiveBatchKey(newest);
+  return runs.filter((r) => effectiveBatchKey(r) === key);
+}
+
 export interface CreativeStagePerAccount {
   present: boolean; // o run tinha stats.creatives?
   upserted: number;

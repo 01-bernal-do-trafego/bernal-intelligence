@@ -36,13 +36,28 @@ const CRE: Record<string, { label: string; tone: string }> = {
  * Três eixos SEPARADOS de estado da sincronização — performance freshness NÃO
  * é afetada por uma tentativa que falhou; creatives é independente.
  */
-export function SyncHealthLines({ health }: { health: ClientSyncHealth | null }) {
+export function SyncHealthLines({
+  health,
+  autoSyncEnabled = false,
+}: {
+  health: ClientSyncHealth | null;
+  autoSyncEnabled?: boolean;
+}) {
+  const autoLine = (
+    <span className="sm:col-span-3">
+      Sincronização automática:{" "}
+      <span className={autoSyncEnabled ? "text-positive" : "text-muted"}>
+        {autoSyncEnabled ? "ativa (a cada ~4h)" : "inativa"}
+      </span>{" "}
+      · o botão manual continua disponível.
+    </span>
+  );
   if (!health) {
     return (
-      <p className="text-xs text-muted">
-        Sincronização automática: <span className="text-foreground">ativa</span>{" "}
-        (a cada ~4h). Ainda sem histórico de sincronização.
-      </p>
+      <div className="grid grid-cols-1 gap-1 text-xs text-muted">
+        {autoLine}
+        <span>Ainda sem histórico de sincronização.</span>
+      </div>
     );
   }
   const perf = PERF[health.performanceStatus] ?? PERF.never;
@@ -64,11 +79,7 @@ export function SyncHealthLines({ health }: { health: ClientSyncHealth | null })
         Última sincronização: <span className={last.tone}>{last.label}</span>
         {health.lastSyncAt ? ` · ${ago(health.lastSyncAt)}` : ""}
       </span>
-      <span className="sm:col-span-3">
-        Sincronização automática:{" "}
-        <span className="text-foreground">ativa</span> (a cada ~4h) · o botão
-        manual continua disponível.
-      </span>
+      {autoLine}
     </div>
   );
 }

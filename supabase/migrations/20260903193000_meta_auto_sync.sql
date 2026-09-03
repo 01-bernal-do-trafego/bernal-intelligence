@@ -215,38 +215,48 @@ perf_per_account as (
   from public.meta_sync_runs r
   group by r.ad_account_ref
 ),
--- cliente: só é tão fresco quanto a conta ELEGÍVEL mais atrasada
+-- cliente: só é tão fresco quanto a conta ELEGÍVEL mais atrasada.
+-- IMPORTANTE: min() ignora NULL. Se QUALQUER conta elegível não tem sync de
+-- performance válido (conta sem run, ou sem run essencial-ok) -> o cliente é
+-- `never`, NÃO o min das que sincronizaram.
 perf_per_client as (
   select e.client_id,
-         case when count(*) filter (where p.perf_at is null) > 0
-              then null
-              else min(p.perf_at) end as performance_synced_at
+         case
+           when bool_or(p.perf_at is null) then null
+           else min(p.perf_at)
+         end as performance_synced_at
   from public.meta_eligible_ad_accounts e
   left join perf_per_account p on p.ad_account_ref = e.ad_account_ref
   group by e.client_id
 ),
--- batch mais recente do cliente
-last_batch as (
-  select distinct on (r.client_id)
-         r.client_id, r.sync_batch_id, r.started_at
+-- runs com chave de EXECUÇÃO efetiva: runs novos usam sync_batch_id;
+-- runs LEGADOS (pré-migration, sync_batch_id NULL) usam o próprio id -> cada
+-- um vira um "batch" individual (não somem, nem se fundem num batch único).
+runs_keyed as (
+  select r.*, coalesce(r.sync_batch_id, r.id) as batch_key
   from public.meta_sync_runs r
-  where r.sync_batch_id is not null
-  order by r.client_id, r.started_at desc
+),
+-- batch (execução) mais recente do cliente
+last_batch as (
+  select distinct on (rk.client_id)
+         rk.client_id, rk.batch_key, rk.started_at
+  from runs_keyed rk
+  order by rk.client_id, rk.started_at desc
 ),
 batch_runs as (
-  select lb.client_id, lb.sync_batch_id,
-         min(r.started_at) as started_at,
-         max(r.finished_at) as finished_at,
-         array_agg(r.status::text) as statuses,
-         array_agg(coalesce(r.stats -> 'creatives' ->> 'degraded','')) as cre_degraded,
-         array_agg(coalesce(r.stats -> 'creatives' ->> 'upserted','')) as cre_upserted,
-         array_agg(coalesce(r.stats -> 'creatives' ->> 'minimal_only','')) as cre_minonly,
-         array_agg(coalesce(r.stats -> 'creatives' ->> 'failed','')) as cre_failed,
-         bool_or(r.stats ? 'creatives' and (r.stats -> 'creatives') is not null) as any_creatives
+  select lb.client_id, lb.batch_key,
+         min(rk.started_at) as started_at,
+         max(rk.finished_at) as finished_at,
+         array_agg(rk.status::text) as statuses,
+         array_agg(coalesce(rk.stats -> 'creatives' ->> 'degraded','')) as cre_degraded,
+         array_agg(coalesce(rk.stats -> 'creatives' ->> 'upserted','')) as cre_upserted,
+         array_agg(coalesce(rk.stats -> 'creatives' ->> 'minimal_only','')) as cre_minonly,
+         array_agg(coalesce(rk.stats -> 'creatives' ->> 'failed','')) as cre_failed,
+         bool_or(rk.stats ? 'creatives' and (rk.stats -> 'creatives') is not null) as any_creatives
   from last_batch lb
-  join public.meta_sync_runs r
-    on r.client_id = lb.client_id and r.sync_batch_id = lb.sync_batch_id
-  group by lb.client_id, lb.sync_batch_id
+  join runs_keyed rk
+    on rk.client_id = lb.client_id and rk.batch_key = lb.batch_key
+  group by lb.client_id, lb.batch_key
 )
 select
   coalesce(pc.client_id, br.client_id) as client_id,
@@ -264,7 +274,7 @@ select
     when br.statuses <@ array['error'] then 'failed'
     else 'partial'
   end as last_sync_status,
-  br.sync_batch_id as last_batch_id,
+  br.batch_key as last_batch_id,
   case
     when br.any_creatives is not true then 'never'
     when (select bool_or(x <> '0' and x <> '') from unnest(br.cre_failed) x)
@@ -332,6 +342,32 @@ comment on function public.meta_clients_due_for_sync(integer, interval) is
   'é NULL ou > p_min_age. Tentativa falha mantém o timestamp válido -> cliente '
   'segue due e é repescado.';
 
+-- -----------------------------------------------------------------------------
+-- 8b. estado REAL do scheduler (sem tabela/config nova): o job existe e está
+--     ativo em cron.job? Enquanto o bloco cron.schedule abaixo não for
+--     executado, devolve false -> a UI mostra "Inativa". Depois de ativar,
+--     passa a true sozinho.
+-- -----------------------------------------------------------------------------
+create or replace function public.meta_auto_sync_enabled()
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select exists (
+    select 1 from cron.job
+    where jobname = 'meta-auto-sync-dispatch' and active
+  );
+$$;
+
+revoke all on function public.meta_auto_sync_enabled() from public, anon;
+grant execute on function public.meta_auto_sync_enabled() to authenticated, service_role;
+
+comment on function public.meta_auto_sync_enabled() is
+  'AUTO SYNC V1 — true se o job cron `meta-auto-sync-dispatch` existe e está '
+  'ativo. Fonte real do estado do scheduler para a UI, sem tabela/flag nova.';
+
 -- =============================================================================
 -- 9. CRON — NÃO ATIVADO. Rode o bloco abaixo (SQL ou UI do Supabase Cron)
 --    SÓ quando autorizar. O secret vem do Vault; nunca fica no arquivo.
@@ -373,6 +409,7 @@ comment on function public.meta_clients_due_for_sync(integer, interval) is
 -- =============================================================================
 -- ROLLBACK (manual):
 --   select cron.unschedule('meta-auto-sync-dispatch');   -- se ativado
+--   drop function if exists public.meta_auto_sync_enabled();
 --   drop function if exists public.meta_clients_due_for_sync(integer, interval);
 --   drop view if exists public.meta_client_sync_health;
 --   drop function if exists public.meta_essential_stages();

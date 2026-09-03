@@ -3,10 +3,13 @@ import {
   ESSENTIAL_STAGES,
   aggregateBatchStatus,
   aggregateCreativesStatus,
+  effectiveBatchKey,
   essentialStagesComplete,
+  latestBatch,
   performanceStatus,
   performanceSyncedAt,
   type CreativeStagePerAccount,
+  type SyncRunLite,
 } from "@/lib/meta/sync-health";
 
 const cre = (o: Partial<CreativeStagePerAccount>): CreativeStagePerAccount => ({
@@ -95,6 +98,68 @@ describe("performance freshness — separada do status do último run", () => {
     );
     expect(performanceSyncedAt(["2026-09-03T10:00:00Z", null])).toBeNull();
     expect(performanceSyncedAt([])).toBeNull();
+  });
+
+  // regressão: min() do Postgres ignora NULL -> guard explícito
+  it("A success 10:00 + B NUNCA sincronizada -> client = never (não 10:00)", () => {
+    const at = performanceSyncedAt(["2026-09-03T10:00:00Z", null]);
+    expect(at).toBeNull();
+    expect(performanceStatus(at, Date.parse("2026-09-03T11:00:00Z"))).toBe("never");
+  });
+  it("A success recente + B success mais ANTIGA -> usa B", () => {
+    const at = performanceSyncedAt(["2026-09-03T11:30:00Z", "2026-09-03T02:00:00Z"]);
+    expect(at).toBe("2026-09-03T02:00:00Z"); // a conta mais atrasada
+    expect(performanceStatus(at, Date.parse("2026-09-03T12:00:00Z"))).toBe("stale"); // 10h
+  });
+  it("A + B ambas success recentes -> fresh", () => {
+    const at = performanceSyncedAt(["2026-09-03T10:30:00Z", "2026-09-03T11:00:00Z"]);
+    expect(at).toBe("2026-09-03T10:30:00Z");
+    expect(performanceStatus(at, Date.parse("2026-09-03T12:00:00Z"))).toBe("fresh");
+  });
+});
+
+describe("execução (batch) — inclui runs legados sem sync_batch_id", () => {
+  const run = (o: Partial<SyncRunLite>): SyncRunLite => ({
+    id: "r",
+    syncBatchId: null,
+    status: "success",
+    startedAt: "2026-09-01T00:00:00Z",
+    ...o,
+  });
+
+  it("run novo usa sync_batch_id; run legado usa o próprio id", () => {
+    expect(effectiveBatchKey({ id: "r1", syncBatchId: "b1" })).toBe("b1");
+    expect(effectiveBatchKey({ id: "r2", syncBatchId: null })).toBe("r2");
+  });
+
+  it("dois runs LEGADOS (batch NULL) NÃO formam um único batch", () => {
+    const runs = [
+      run({ id: "old1", startedAt: "2026-09-01T08:00:00Z", status: "error" }),
+      run({ id: "old2", startedAt: "2026-09-02T08:00:00Z", status: "success" }),
+    ];
+    const b = latestBatch(runs);
+    expect(b).toHaveLength(1); // só o mais recente
+    expect(b[0].id).toBe("old2");
+    expect(aggregateBatchStatus(b.map((r) => r.status))).toBe("success"); // não vira "never"/"partial"
+  });
+
+  it("o run histórico mais recente continua sendo a última sync", () => {
+    const runs = [
+      run({ id: "old1", startedAt: "2026-09-01T08:00:00Z", status: "success" }),
+      run({ id: "old2", startedAt: "2026-09-02T08:00:00Z", status: "partial" }),
+    ];
+    expect(latestBatch(runs)[0].id).toBe("old2");
+  });
+
+  it("runs NOVOS com o mesmo sync_batch_id continuam agregados", () => {
+    const runs = [
+      run({ id: "n1", syncBatchId: "b9", startedAt: "2026-09-03T10:00:00Z", status: "success" }),
+      run({ id: "n2", syncBatchId: "b9", startedAt: "2026-09-03T10:00:01Z", status: "error" }),
+      run({ id: "old", startedAt: "2026-09-01T00:00:00Z", status: "success" }),
+    ];
+    const b = latestBatch(runs);
+    expect(b.map((r) => r.id).sort()).toEqual(["n1", "n2"]);
+    expect(aggregateBatchStatus(b.map((r) => r.status))).toBe("partial");
   });
 });
 

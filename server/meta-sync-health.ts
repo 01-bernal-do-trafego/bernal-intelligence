@@ -51,3 +51,19 @@ export const getClientSyncHealth = cache(
     }
   },
 );
+
+/**
+ * Estado REAL do scheduler (o job cron existe e está ativo?). Lido da RPC
+ * `public.meta_auto_sync_enabled` — SEM tabela/flag nova. `false` enquanto o
+ * `cron.schedule` não for executado.
+ */
+export const getAutoSyncEnabled = cache(async (): Promise<boolean> => {
+  try {
+    const supabase = await createSupabaseServerClient();
+    const { data, error } = await supabase.rpc("meta_auto_sync_enabled");
+    if (error) return false;
+    return data === true;
+  } catch {
+    return false;
+  }
+});
