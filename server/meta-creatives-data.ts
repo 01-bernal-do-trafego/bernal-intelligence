@@ -90,6 +90,85 @@ export interface CreativeValidationOverview {
   filters: { accountId: string; campaignId: string };
   accounts: { id: string; name: string }[];
   campaigns: { id: string; name: string }[];
+  /** estado da sincronização de CRIATIVOS na última rodada (telemetria do run). */
+  creativeSync: CreativeSyncStatus;
+}
+
+export interface CreativeSyncStatus {
+  status: "ok" | "degraded" | "failed" | "unknown" | "never";
+  runAt: string | null;
+  runStatus: string | null;
+  attempted: number;
+  upserted: number;
+  failed: number;
+  minimalFieldsUsed: boolean;
+  perIdFallbackUsed: boolean;
+  linked: number;
+  linkSkipped: number;
+  errorCodes: { code: number | null; subcode: number | null; type: string | null; userTitle: string | null }[];
+}
+
+const CREATIVE_SYNC_NEVER: CreativeSyncStatus = {
+  status: "never",
+  runAt: null,
+  runStatus: null,
+  attempted: 0,
+  upserted: 0,
+  failed: 0,
+  minimalFieldsUsed: false,
+  perIdFallbackUsed: false,
+  linked: 0,
+  linkSkipped: 0,
+  errorCodes: [],
+};
+
+function deriveCreativeSync(run: Record<string, unknown> | null): CreativeSyncStatus {
+  if (!run) return CREATIVE_SYNC_NEVER;
+  const stats =
+    run.stats && typeof run.stats === "object" ? (run.stats as Record<string, unknown>) : {};
+  const c = stats.creatives && typeof stats.creatives === "object"
+    ? (stats.creatives as Record<string, unknown>)
+    : null;
+  const ac = stats.ad_creatives && typeof stats.ad_creatives === "object"
+    ? (stats.ad_creatives as Record<string, unknown>)
+    : null;
+  const runAt = str(run.finished_at) ?? str(run.started_at);
+  const runStatus = str(run.status);
+  if (!c) {
+    return { ...CREATIVE_SYNC_NEVER, status: "unknown", runAt, runStatus };
+  }
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const b = (v: unknown) => v === true;
+  const attempted = n(c.attempted);
+  const upserted = n(c.upserted);
+  const failed = n(c.failed);
+  const degraded = b(c.degraded) || b(c.minimal_fields_used) || b(c.per_id_fallback_used);
+  const errorCodes = Array.isArray(c.error_codes)
+    ? (c.error_codes as Record<string, unknown>[]).slice(0, 8).map((e) => ({
+        code: typeof e.code === "number" ? e.code : null,
+        subcode: typeof e.subcode === "number" ? e.subcode : null,
+        type: typeof e.type === "string" ? e.type : null,
+        userTitle: typeof e.userTitle === "string" ? e.userTitle : null,
+      }))
+    : [];
+  let status: CreativeSyncStatus["status"];
+  if (attempted === 0) status = "ok";
+  else if (upserted === 0) status = "failed";
+  else if (degraded || failed > 0) status = "degraded";
+  else status = "ok";
+  return {
+    status,
+    runAt,
+    runStatus,
+    attempted,
+    upserted,
+    failed,
+    minimalFieldsUsed: b(c.minimal_fields_used),
+    perIdFallbackUsed: b(c.per_id_fallback_used),
+    linked: n(ac?.linked),
+    linkSkipped: n(ac?.skipped),
+    errorCodes,
+  };
 }
 
 function emptyOverview(preset: PeriodPreset): CreativeValidationOverview {
@@ -114,6 +193,7 @@ function emptyOverview(preset: PeriodPreset): CreativeValidationOverview {
     filters: { accountId: "all", campaignId: "all" },
     accounts: [],
     campaigns: [],
+    creativeSync: CREATIVE_SYNC_NEVER,
   };
 }
 
@@ -135,7 +215,7 @@ export const getCreativeValidationOverview = cache(
     try {
       const supabase = await createSupabaseServerClient();
 
-      const [acctRes, dcfgRes, campNameRes, adsetNameRes] = await Promise.all([
+      const [acctRes, dcfgRes, campNameRes, adsetNameRes, runRes] = await Promise.all([
         supabase
           .from("meta_ad_accounts")
           .select("ad_account_id, account_name, currency, timezone_name")
@@ -149,7 +229,18 @@ export const getCreativeValidationOverview = cache(
           .maybeSingle(),
         supabase.from("meta_campaigns").select("campaign_id, name").eq("client_id", clientId),
         supabase.from("meta_adsets").select("adset_id, name").eq("client_id", clientId),
+        supabase
+          .from("meta_sync_runs")
+          .select("status, started_at, finished_at, stats")
+          .eq("client_id", clientId)
+          .order("started_at", { ascending: false })
+          .limit(1)
+          .maybeSingle(),
       ]);
+
+      const creativeSync = deriveCreativeSync(
+        (runRes.data as Record<string, unknown> | null) ?? null,
+      );
 
       const linked = (acctRes.data ?? []) as Record<string, unknown>[];
       if (linked.length === 0) return emptyOverview(preset);
@@ -382,6 +473,7 @@ export const getCreativeValidationOverview = cache(
               .map((id) => [id, campNameById.get(id) ?? id]),
           ),
         ].map(([id, name]) => ({ id, name: name ?? id })),
+        creativeSync,
       };
     } catch {
       return emptyOverview(preset);

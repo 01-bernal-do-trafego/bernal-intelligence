@@ -26,7 +26,6 @@ import { openToken } from "../_shared/crypto.ts";
 import {
   GraphApiError,
   GraphPaginationOverflow,
-  getObjectsByIds,
   listEdge,
   listInsights,
 } from "../_shared/graph.ts";
@@ -35,7 +34,14 @@ import {
   toPeriodicRows,
   type InsightLevel,
 } from "../_shared/insights.ts";
-import { CREATIVE_API_FIELDS, creativeDbRow } from "../_shared/creatives.ts";
+import { creativeDbRow } from "../_shared/creatives.ts";
+import {
+  creativesStageOutcome,
+  graphCreativeTransport,
+  linkStageOutcome,
+  planAdCreativeLinks,
+  planCreativeFetch,
+} from "../_shared/creatives-fetch.ts";
 
 const GRAPH_BASE = Deno.env.get("META_GRAPH_BASE") ?? "https://graph.facebook.com";
 const GRAPH_VERSION = Deno.env.get("META_GRAPH_VERSION") ?? "v26.0";
@@ -285,7 +291,14 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
-    const stages: Array<{ stage: string; outcome: string; rows?: number; pages?: number }> = [];
+    const stages: Array<{
+      stage: string;
+      outcome: string;
+      rows?: number;
+      pages?: number;
+      // telemetria sanitizada (sem token/URL) — vai para stats.<stage>.
+      detail?: Record<string, unknown>;
+    }> = [];
     let fatal: string | null = null;
 
     const ctxFor = (level: InsightLevel) => ({
@@ -495,41 +508,63 @@ Deno.serve(async (req: Request) => {
           ]),
         ];
 
-        let cPages = 0;
-        if (creativeIds.length) {
-          const details = await getObjectsByIds({
-            ...graph,
-            ids: creativeIds,
-            fields: CREATIVE_API_FIELDS,
-          });
-          cPages = Math.ceil(creativeIds.length / 50);
-          const creativeRows = [...details.values()]
-            .map((raw) =>
-              creativeDbRow(raw, {
-                clientId,
-                adAccountRef: acc.id,
-                adAccountId: acc.ad_account_id,
-              }),
-            )
-            .filter((r): r is NonNullable<typeof r> => r !== null);
-          if (creativeRows.length) {
-            const { error } = await admin
-              .from("meta_creatives")
-              .upsert(creativeRows, { onConflict: "creative_id" });
-            if (error) throw new Error(`upsert creatives: ${error.message}`);
-          }
-          stages.push({
-            stage: "creatives",
-            outcome: "done",
-            rows: creativeRows.length,
-            pages: cPages,
-          });
-        } else {
-          stages.push({ stage: "creatives", outcome: "done", rows: 0, pages: 0 });
+        // ---- busca EM CAMADAS (full -> mínimo -> por id). Erro NUNCA é engolido.
+        const fetchResult = await planCreativeFetch({
+          ids: creativeIds,
+          transport: graphCreativeTransport(graph),
+        });
+        if (fetchResult.tokenRevoked) fatal = "token_revoked";
+        const tel = fetchResult.telemetry;
+
+        const creativeRows = [...fetchResult.objects.values()]
+          .map((raw) =>
+            creativeDbRow(raw, {
+              clientId,
+              adAccountRef: acc.id,
+              adAccountId: acc.ad_account_id,
+            }),
+          )
+          .filter((r): r is NonNullable<typeof r> => r !== null);
+
+        let upserted = 0;
+        let creativeUpsertError: string | null = null;
+        if (creativeRows.length) {
+          const { error } = await admin
+            .from("meta_creatives")
+            .upsert(creativeRows, { onConflict: "creative_id" });
+          if (error) creativeUpsertError = String(error.message).slice(0, 200);
+          else upserted = creativeRows.length;
         }
 
-        // relação ad↔creative: LOG DE OBSERVAÇÃO. Nunca apaga histórico;
-        // só cria/atualiza last_seen do par visto. Idempotente por (ad_id, creative_id).
+        stages.push({
+          stage: "creatives",
+          outcome: creativesStageOutcome({
+            attempted: tel.attempted,
+            fetched: fetchResult.objects.size,
+            degraded: tel.degraded || creativeUpsertError != null,
+            failed: tel.failed,
+            fatal: Boolean(fatal),
+          }),
+          rows: upserted,
+          pages: tel.chunks,
+          detail: {
+            attempted: tel.attempted,
+            chunks: tel.chunks,
+            full_fetched: tel.full_fetched,
+            fallback_fetched: tel.fallback_fetched,
+            minimal_fields_used: tel.minimal_fields_used,
+            per_id_fallback_used: tel.per_id_fallback_used,
+            failed: tel.failed,
+            degraded: tel.degraded,
+            upserted,
+            error_codes: tel.error_codes,
+            failed_ids_sample: tel.failed_ids,
+            ...(creativeUpsertError ? { upsert_error: creativeUpsertError } : {}),
+          },
+        });
+
+        // ---- relação ad↔creative: LOG DE OBSERVAÇÃO. Só liga creatives
+        // realmente salvos. first_seen só no INSERT; last_seen sempre atualizado.
         const { data: creativeRefRows } = await admin
           .from("meta_creatives")
           .select("id, creative_id")
@@ -540,23 +575,24 @@ Deno.serve(async (req: Request) => {
           ),
         );
         const now = new Date().toISOString();
-        const relPayload = currentPairs
-          .map((p) => {
-            const adRef = adRefByMetaId.get(p.ad_id);
-            const creativeRef = creativeRefByMetaId.get(p.creative_id);
-            if (!adRef || !creativeRef) return null;
-            return {
-              client_id: clientId,
-              ad_ref: adRef,
-              creative_ref: creativeRef,
-              ad_id: p.ad_id,
-              creative_id: p.creative_id,
-              // first_seen só entra no INSERT (default now()); no update mantém.
-              last_seen: now,
-              updated_at: now,
-            };
-          })
-          .filter((r): r is NonNullable<typeof r> => r !== null);
+        const plan = planAdCreativeLinks({
+          pairs: currentPairs.map((p) => ({ adId: p.ad_id, creativeId: p.creative_id })),
+          adRefByMetaId,
+          savedCreativeIds: new Set(creativeRefByMetaId.keys()),
+        });
+        const linkAttempted = plan.attempted;
+        const linkSkipped = plan.skipped;
+        const relPayload = plan.links.map((l) => ({
+          client_id: clientId,
+          ad_ref: l.adRef,
+          creative_ref: creativeRefByMetaId.get(l.creativeId) as string,
+          ad_id: l.adId,
+          creative_id: l.creativeId,
+          last_seen: now, // first_seen: só no INSERT (default now())
+          updated_at: now,
+        }));
+        let linked = 0;
+        let linkError: string | null = null;
         if (relPayload.length) {
           const { error } = await admin
             .from("meta_ad_creatives")
@@ -564,18 +600,32 @@ Deno.serve(async (req: Request) => {
               onConflict: "ad_id,creative_id",
               ignoreDuplicates: false,
             });
-          if (error) throw new Error(`upsert ad_creatives: ${error.message}`);
+          if (error) linkError = String(error.message).slice(0, 200);
+          else linked = relPayload.length;
         }
         stages.push({
           stage: "ad_creatives",
-          outcome: "done",
-          rows: relPayload.length,
+          outcome: linkStageOutcome({
+            attempted: linkAttempted,
+            linked,
+            skipped: linkSkipped,
+            fatal: Boolean(fatal) || linkError != null,
+          }),
+          rows: linked,
+          detail: {
+            attempted: linkAttempted,
+            linked,
+            skipped: linkSkipped,
+            failed: Math.max(0, linkAttempted - linked - linkSkipped),
+            ...(linkError ? { upsert_error: linkError } : {}),
+          },
         });
       } catch (e) {
         if (e instanceof GraphApiError && e.kind === "token_revoked") fatal = "token_revoked";
         stages.push({
           stage: "creatives",
           outcome: e instanceof GraphPaginationOverflow ? "skipped" : "error",
+          detail: { error: String((e as Error)?.message ?? "unknown").slice(0, 200) },
         });
       }
     }
@@ -668,8 +718,24 @@ Deno.serve(async (req: Request) => {
 
     // ---- fechamento --------------------------------------------------
     const done = stages.filter((s2) => s2.outcome === "done");
-    const bad = stages.filter((s2) => s2.outcome !== "done");
-    const status = fatal ? "error" : done.length === 0 ? "error" : bad.length ? "partial" : "success";
+    const degraded = stages.filter((s2) => s2.outcome === "degraded");
+    const bad = stages.filter(
+      (s2) => s2.outcome !== "done" && s2.outcome !== "degraded",
+    );
+    // Qualquer stage não-"done" (degraded OU error/skipped) => a rodada NÃO é
+    // success. `creatives` que buscou 0 de N vira "error" -> partial (nunca
+    // success). Métricas base/conversões continuam gravadas.
+    const anyNotDone = degraded.length > 0 || bad.length > 0;
+    const status = fatal
+      ? "error"
+      : done.length === 0
+        ? "error"
+        : anyNotDone
+          ? "partial"
+          : "success";
+
+    const stageDetail = (name: string) =>
+      stages.find((s2) => s2.stage === name)?.detail ?? null;
 
     const stats = {
       status,
@@ -678,7 +744,12 @@ Deno.serve(async (req: Request) => {
       ads: done.filter((s2) => s2.stage === "ads").reduce((n, s2) => n + (s2.rows ?? 0), 0),
       insights_daily: done.filter((s2) => s2.stage.startsWith("insights_daily_")).reduce((n, s2) => n + (s2.rows ?? 0), 0),
       insights_periodic: done.filter((s2) => s2.stage.startsWith("insights_periodic_")).reduce((n, s2) => n + (s2.rows ?? 0), 0),
+      // telemetria sanitizada (sem token/URL) — a UI usa para "criativos
+      // parcialmente sincronizados / falharam".
+      creatives: stageDetail("creatives"),
+      ad_creatives: stageDetail("ad_creatives"),
       stages_done: done.map((s2) => s2.stage),
+      stages_degraded: degraded.map((s2) => s2.stage),
       stages_bad: bad.map((s2) => s2.stage),
       pages: stages.reduce((n, s2) => n + (s2.pages ?? 0), 0),
     };
@@ -692,11 +763,22 @@ Deno.serve(async (req: Request) => {
       }).eq("id", connection.id);
     }
 
+    // erro curto e SANITIZADO (sem token/URL) — só nomes de stage + códigos Meta.
+    const errCodes = (stats.creatives as { error_codes?: Array<{ code: number | null }> } | null)
+      ?.error_codes?.map((c) => c.code).filter((c): c is number => c != null) ?? [];
+    const incompleteStages = [...degraded, ...bad].map((x) => x.stage);
+    const runError =
+      fatal ??
+      (incompleteStages.length
+        ? `stages incompletas: ${incompleteStages.join(", ")}` +
+          (errCodes.length ? ` (meta code: ${[...new Set(errCodes)].join("/")})` : "")
+        : null);
+
     await admin.rpc("meta_sync_release", {
       p_run_id: runId,
       p_status: status,
       p_stats: stats,
-      p_error: fatal ?? (bad.length ? `stages incompletas: ${bad.map((b) => b.stage).join(", ")}` : null),
+      p_error: runError,
     });
     await admin.from("meta_ad_accounts").update({
       last_sync_at: new Date().toISOString(),

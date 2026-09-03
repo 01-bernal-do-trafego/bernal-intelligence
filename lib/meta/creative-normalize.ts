@@ -61,24 +61,12 @@ export interface NormalizedCreative {
   isDynamic: boolean;
 }
 
-/** fields oficiais do AdCreative que o sync pede à Meta v26. */
-export const CREATIVE_API_FIELDS = [
-  "id",
-  "name",
-  "object_type",
-  "thumbnail_url",
-  "image_url",
-  "image_hash",
-  "video_id",
-  "title",
-  "body",
-  "link_url",
-  "call_to_action_type",
-  "object_story_id",
-  "effective_object_story_id",
-  "object_story_spec",
-  "asset_feed_spec",
-].join(",");
+export {
+  CREATIVE_FIELDS_FULL,
+  CREATIVE_FIELDS_MINIMAL,
+} from "@/lib/meta/creative-batch-fetch";
+/** @deprecated use `CREATIVE_FIELDS_FULL` */
+export { CREATIVE_FIELDS_FULL as CREATIVE_API_FIELDS } from "@/lib/meta/creative-batch-fetch";
 
 function rec(v: unknown): Record<string, unknown> | null {
   return v && typeof v === "object" && !Array.isArray(v)

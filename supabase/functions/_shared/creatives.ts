@@ -15,23 +15,7 @@ export type CreativeFormat =
   | "dynamic"
   | "unknown";
 
-export const CREATIVE_API_FIELDS = [
-  "id",
-  "name",
-  "object_type",
-  "thumbnail_url",
-  "image_url",
-  "image_hash",
-  "video_id",
-  "title",
-  "body",
-  "link_url",
-  "call_to_action_type",
-  "object_story_id",
-  "effective_object_story_id",
-  "object_story_spec",
-  "asset_feed_spec",
-].join(",");
+// os field-sets (FULL / MINIMAL) vivem em `./creatives-fetch.ts`.
 
 // deno-lint-ignore no-explicit-any
 type Obj = Record<string, any>;

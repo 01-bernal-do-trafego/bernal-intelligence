@@ -45,8 +45,40 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
     }),
   ]);
 
-  const { account, period, counts, rows, resultMetric } = overview;
+  const { account, period, counts, rows, resultMetric, creativeSync } = overview;
   const currency = account?.currency ?? null;
+
+  const csCodes = creativeSync.errorCodes
+    .map((e) => [e.code, e.subcode].filter((x) => x != null).join("·"))
+    .filter(Boolean)
+    .join(", ");
+  const creativeSyncBanner:
+    | { tone: "warning" | "negative"; text: string }
+    | null =
+    creativeSync.status === "failed"
+      ? {
+          tone: "negative",
+          text:
+            `Dados de performance sincronizados. Falha na sincronização dos criativos` +
+            ` (${creativeSync.attempted} tentados, 0 salvos${csCodes ? `; Meta code ${csCodes}` : ""}).` +
+            ` Rode Sincronizar Meta novamente.`,
+        }
+      : creativeSync.status === "degraded"
+        ? {
+            tone: "warning",
+            text:
+              `Dados de performance sincronizados. Criativos sincronizados parcialmente` +
+              ` (${creativeSync.upserted}/${creativeSync.attempted} salvos` +
+              `${creativeSync.minimalFieldsUsed ? "; campos completos falharam, usados campos mínimos" : ""}` +
+              `${creativeSync.perIdFallbackUsed ? "; fallback por id" : ""}` +
+              `${csCodes ? `; Meta code ${csCodes}` : ""}).`,
+          }
+        : creativeSync.status === "unknown" && creativeSync.runStatus
+          ? {
+              tone: "warning",
+              text: "A última sincronização é anterior a esta versão — rode Sincronizar Meta para popular os criativos.",
+            }
+          : null;
 
   return (
     <div className="mx-auto flex max-w-6xl flex-col gap-6">
@@ -63,6 +95,19 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
           <MetaConnectionBadge state={connection.state} />
         </div>
       </div>
+
+      {creativeSyncBanner && (
+        <div
+          className={
+            creativeSyncBanner.tone === "negative"
+              ? "flex items-start gap-2 rounded-lg border border-negative/30 bg-negative/10 px-4 py-3 text-sm text-negative"
+              : "flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning"
+          }
+        >
+          <Info className="mt-0.5 size-4 shrink-0" />
+          <p>{creativeSyncBanner.text}</p>
+        </div>
+      )}
 
       <div className="flex items-start gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
         <Info className="mt-0.5 size-4 shrink-0 text-accent" />

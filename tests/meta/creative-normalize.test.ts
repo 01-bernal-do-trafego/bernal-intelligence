@@ -163,6 +163,36 @@ describe("normalizeCreative — camada normalizada + raw preservado", () => {
     expect(many.assetCounts.titles).toBe(3);
   });
 
+  it("fetch MÍNIMO (sem object_story_spec / asset_feed_spec) ainda gera creative", () => {
+    // payload como volta do field-set mínimo do fallback
+    const n = normalizeCreative({
+      id: "601",
+      name: "Só o mínimo",
+      object_type: "VIDEO",
+      thumbnail_url: "https://scontent.example/t.jpg",
+      image_url: null,
+      image_hash: null,
+      video_id: "v_601",
+      object_story_id: "PP_601",
+      effective_object_story_id: "PP_601_eff",
+    })!;
+    expect(n.creativeId).toBe("601");
+    expect(n.format).toBe("video");
+    expect(n.hasVideo).toBe(true);
+    // opcionais ausentes -> null, NÃO descarta o creative
+    expect(n.body).toBeNull();
+    expect(n.title).toBeNull();
+    expect(n.callToActionType).toBeNull();
+    expect(n.objectStorySpec).toBeNull();
+    expect(n.assetFeedSpec).toBeNull();
+    // ainda vira linha de banco
+    const row = creativeDbRow(n, ctx);
+    expect(row.creative_id).toBe("601");
+    expect(row.object_story_spec).toBeNull();
+    expect(row.asset_feed_spec).toBeNull();
+    expect(row.thumbnail_url).toBe("https://scontent.example/t.jpg");
+  });
+
   it("effective_object_story_id e object_story_id preservados", () => {
     const n = normalizeCreative({
       id: "560",
