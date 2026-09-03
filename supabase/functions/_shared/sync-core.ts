@@ -142,6 +142,15 @@ export interface RunClientSyncOpts {
 export interface RunClientSyncResult {
   ok: boolean;
   reason?: string;
+  /**
+   * true  = skip ESPERADO (sync_already_running / no_eligible_account).
+   * false num resultado `ok:false` = erro INESPERADO (não pode virar skip).
+   */
+  skip?: boolean;
+  /** fase do erro inesperado (ex. "acquire"). */
+  phase?: string;
+  /** SQLSTATE sanitizado (5 chars) quando disponível — nunca SQL/message bruta. */
+  code?: string;
   batchId?: string;
   dateFrom?: string;
   dateTo?: string;
@@ -189,18 +198,30 @@ export async function runClientSync(
     p_created_by: createdBy,
   });
   if (acqErr) {
+    // `msg` só serve para casar os sentinelas — NUNCA é retornado/logado.
     const msg = String(acqErr.message ?? "");
     if (msg.includes("sync_already_running")) {
-      return { ok: false, reason: "sync_already_running", results: [] };
+      return { ok: false, reason: "sync_already_running", skip: true, results: [] };
     }
     if (msg.includes("no_eligible_account")) {
-      return { ok: false, reason: "no_eligible_account", results: [] };
+      return { ok: false, reason: "no_eligible_account", skip: true, results: [] };
     }
-    return { ok: false, reason: "acquire_failed", results: [] };
+    // erro INESPERADO de acquire -> não vira skip. Só o SQLSTATE (5 chars) sai.
+    const rawCode = (acqErr as { code?: unknown }).code;
+    const code =
+      typeof rawCode === "string" && /^[0-9A-Za-z]{5}$/.test(rawCode) ? rawCode : undefined;
+    return {
+      ok: false,
+      reason: "acquire_failed",
+      skip: false,
+      phase: "acquire",
+      ...(code ? { code } : {}),
+      results: [],
+    };
   }
   const rows = (acq ?? []) as AcquireRow[];
   if (rows.length === 0) {
-    return { ok: false, reason: "no_eligible_account", results: [] };
+    return { ok: false, reason: "no_eligible_account", skip: true, results: [] };
   }
   const batchId = rows[0].sync_batch_id;
 

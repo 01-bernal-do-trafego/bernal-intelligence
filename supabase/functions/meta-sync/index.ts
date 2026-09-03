@@ -82,8 +82,19 @@ Deno.serve(async (req: Request) => {
   );
 
   if (!result.ok) {
-    const code = result.reason === "sync_already_running" ? 409 : 409;
-    return json({ error: result.reason ?? "sync_failed" }, code);
+    if (result.skip) {
+      // sync_already_running / no_eligible_account -> conflito de estado real (409).
+      return json({ error: result.reason ?? "sync_conflict" }, 409);
+    }
+    // erro INESPERADO de acquire -> 500, sanitizado (só reason/phase/code).
+    return json(
+      {
+        error: result.reason ?? "acquire_failed",
+        ...(result.phase ? { phase: result.phase } : {}),
+        ...(result.code ? { code: result.code } : {}),
+      },
+      500,
+    );
   }
 
   const anyOk = result.results.some(

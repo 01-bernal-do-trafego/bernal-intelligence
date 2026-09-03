@@ -77,8 +77,20 @@ Deno.serve(async (req: Request) => {
   );
 
   if (!result.ok) {
-    // sync_already_running / no_eligible_account não são falha do scheduler.
-    return json({ status: "skipped", reason: result.reason ?? "unknown" }, 200);
+    if (result.skip) {
+      // sync_already_running / no_eligible_account: skip ESPERADO, não é falha.
+      return json({ status: "skipped", reason: result.reason ?? "unknown" }, 200);
+    }
+    // erro INESPERADO (ex. acquire) -> 5xx, payload sanitizado (sem SQL/token/dados).
+    return json(
+      {
+        status: "error",
+        reason: result.reason ?? "acquire_failed",
+        ...(result.phase ? { phase: result.phase } : {}),
+        ...(result.code ? { code: result.code } : {}),
+      },
+      500,
+    );
   }
 
   const anyOk = result.results.some(
