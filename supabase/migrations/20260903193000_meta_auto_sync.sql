@@ -60,9 +60,20 @@ comment on column public.meta_creatives.details_fetched_at is
 
 -- -----------------------------------------------------------------------------
 -- 4. FONTE ÚNICA de elegibilidade de conta
---    conta linkada + conexão existente e válida + secret presente
+--    conta linkada + conexão existente e válida + credencial presente
+--
+--    security_invoker = true -> quando `authenticated` lê (via
+--    meta_client_sync_health), a RLS de meta_ad_accounts/meta_connections
+--    (can_access_client / is_agency) filtra para os clients permitidos.
+--    Quando service_role lê (acquire/dispatcher), enxerga tudo (BYPASSRLS).
+--
+--    Usa `mc.has_secret` (coluna, legível por authenticated via RLS) — NÃO
+--    toca meta_connection_secrets (deny-all p/ authenticated). A ausência real
+--    do cipher já é tratada com segurança em runClientSync (`no_connection_secret`
+--    -> run `error` + conexão marcada `reauthorization_required`).
 -- -----------------------------------------------------------------------------
-create or replace view public.meta_eligible_ad_accounts as
+create or replace view public.meta_eligible_ad_accounts
+with (security_invoker = true) as
   select
     a.id            as ad_account_ref,
     a.client_id     as client_id,
@@ -72,19 +83,15 @@ create or replace view public.meta_eligible_ad_accounts as
   where a.is_linked = true
     and a.connection_id is not null
     and mc.status in ('active', 'expiring')
-    and mc.has_secret = true
-    and exists (
-      select 1 from public.meta_connection_secrets s
-      where s.connection_id = mc.id
-    );
+    and mc.has_secret = true;
 
-revoke all on public.meta_eligible_ad_accounts from public, anon, authenticated;
-grant select on public.meta_eligible_ad_accounts to service_role;
+revoke all on public.meta_eligible_ad_accounts from public, anon;
+grant select on public.meta_eligible_ad_accounts to authenticated, service_role;
 
 comment on view public.meta_eligible_ad_accounts is
-  'AUTO SYNC V1 — critério ÚNICO de conta sincronizável. Usado por '
-  'meta_sync_acquire_client() e meta_clients_due_for_sync() para não divergirem. '
-  'Só service_role (funções SECURITY DEFINER).';
+  'AUTO SYNC V1 — critério ÚNICO de conta sincronizável (linkada + conexão '
+  'active/expiring + has_secret). security_invoker=true: authenticated só vê os '
+  'clients permitidos (RLS); service_role vê tudo. NÃO lê meta_connection_secrets.';
 
 -- -----------------------------------------------------------------------------
 -- 5. limpeza de runs presos — transação própria
@@ -137,7 +144,7 @@ security definer
 set search_path = ''
 as $$
 declare
-  v_batch uuid := gen_random_uuid();
+  v_batch uuid := pg_catalog.gen_random_uuid();  -- qualificado: search_path=''
   v_count integer;
 begin
   if p_client_id is null then

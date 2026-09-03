@@ -67,7 +67,7 @@ describe("meta_sync_acquire_client", () => {
     expect(body).toMatch(/exception\s+when\s+unique_violation\s+then\s+raise\s+exception\s+'sync_already_running'/);
     expect(body).toContain("no_eligible_account");
     // um único batch id para todos os runs
-    expect(body).toMatch(/v_batch\s+uuid\s*:=\s*gen_random_uuid\(\)/);
+    expect(body).toMatch(/v_batch\s+uuid\s*:=\s*(pg_catalog\.)?gen_random_uuid\(\)/);
   });
 });
 
@@ -79,13 +79,33 @@ describe("elegibilidade centralizada (due == acquire)", () => {
     expect(acquire).toContain("public.meta_eligible_ad_accounts");
     expect(due).toContain("public.meta_eligible_ad_accounts");
   });
-  it("elegibilidade cobre linkada + connection válida + secret", () => {
-    const view = active.slice(active.indexOf("view public.meta_eligible_ad_accounts"), active.indexOf("revoke all on public.meta_eligible_ad_accounts"));
+  it("elegibilidade cobre linkada + connection válida + has_secret, SEM tocar meta_connection_secrets", () => {
+    const view = active.slice(
+      active.indexOf("view public.meta_eligible_ad_accounts"),
+      active.indexOf("revoke all on public.meta_eligible_ad_accounts"),
+    );
     expect(view).toContain("a.is_linked = true");
     expect(view).toContain("a.connection_id is not null");
     expect(view).toMatch(/mc\.status\s+in\s*\(\s*'active',\s*'expiring'\s*\)/);
     expect(view).toContain("mc.has_secret = true");
-    expect(view).toContain("meta_connection_secrets");
+    // NUNCA lê a tabela de segredos (deny-all p/ authenticated)
+    expect(view).not.toContain("meta_connection_secrets");
+  });
+  it("meta_eligible_ad_accounts é security_invoker=true e legível por authenticated", () => {
+    expect(active).toMatch(
+      /create\s+or\s+replace\s+view\s+public\.meta_eligible_ad_accounts\s+with\s*\(\s*security_invoker\s*=\s*true\s*\)/,
+    );
+    expect(active).toMatch(
+      /grant\s+select\s+on\s+public\.meta_eligible_ad_accounts\s+to\s+authenticated,\s*service_role/,
+    );
+    expect(active).toMatch(
+      /revoke\s+all\s+on\s+public\.meta_eligible_ad_accounts\s+from\s+public,\s*anon/,
+    );
+  });
+  it("a migration NUNCA lê a tabela meta_connection_secrets (from/join)", () => {
+    // menção em `comment on ... is '...'` é documentação, ok; acesso real não.
+    expect(active).not.toMatch(/\b(from|join)\s+public\.meta_connection_secrets\b/);
+    expect(active).not.toMatch(/exists\s*\(\s*select[^)]*meta_connection_secrets/);
   });
   it("due decide por idade de performance_synced_at, não por status do run", () => {
     const due = active.slice(active.indexOf("function public.meta_clients_due_for_sync"));
