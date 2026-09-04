@@ -90,3 +90,26 @@ export function formatDate(iso: string): string {
   const [year, month, day] = iso.split("-");
   return day && month && year ? `${day}/${month}/${year}` : iso;
 }
+
+/**
+ * Variantes "ou travessão" — para quando `null` significa AUSÊNCIA de dado
+ * (nunca sincronizado, sem base de cálculo), nunca zero. Diferente das
+ * variantes acima (que tratam `null`/`undefined` como 0): aqui `null` vira
+ * "—" explicitamente, preservando a distinção entre "sem dado" e "zero real".
+ */
+export function formatCurrencyOrDash(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : formatCurrency(value);
+}
+
+export function formatNumberOrDash(value: number | null | undefined): string {
+  return value === null || value === undefined ? "—" : formatNumber(value);
+}
+
+export function formatPercentOrDash(
+  value: number | null | undefined,
+  fractionDigits = 1,
+): string {
+  return value === null || value === undefined
+    ? "—"
+    : formatPercent(value, fractionDigits);
+}

@@ -15,6 +15,14 @@ describe("parsePeriod", () => {
     expect(parsePeriod("banana")).toBe("last_7d");
     expect(parsePeriod(null)).toBe("last_7d");
   });
+
+  it("aceita um fallback explícito (ex.: Agency Overview default = last_30d)", () => {
+    expect(parsePeriod(undefined, "last_30d")).toBe("last_30d");
+    expect(parsePeriod(null, "last_30d")).toBe("last_30d");
+    expect(parsePeriod("banana", "last_30d")).toBe("last_30d");
+    // preset explícito na URL sempre vence o fallback da página.
+    expect(parsePeriod("today", "last_30d")).toBe("today");
+  });
 });
 
 describe("resolvePeriod", () => {

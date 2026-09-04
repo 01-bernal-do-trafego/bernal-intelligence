@@ -43,8 +43,11 @@ export function isPeriodPreset(value: string | null | undefined): value is Perio
   return value != null && PRESET_VALUES.has(value);
 }
 
-export function parsePeriod(value: string | null | undefined): PeriodPreset {
-  return isPeriodPreset(value) ? value : DEFAULT_PERIOD;
+export function parsePeriod(
+  value: string | null | undefined,
+  fallback: PeriodPreset = DEFAULT_PERIOD,
+): PeriodPreset {
+  return isPeriodPreset(value) ? value : fallback;
 }
 
 export function periodLabel(preset: PeriodPreset): string {
