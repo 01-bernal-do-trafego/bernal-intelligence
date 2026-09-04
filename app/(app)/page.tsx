@@ -63,7 +63,11 @@ export default async function HomePage({ searchParams }: HomePageProps) {
             <MetricCard
               label="Investimento gerenciado"
               value={formatCurrencyOrDash(overview.totals.spend)}
-              hint="Soma das contas Meta vinculadas, período selecionado"
+              hint={
+                overview.coverage.withData < overview.coverage.total
+                  ? `${overview.coverage.withData} de ${overview.coverage.total} clientes com dados no período`
+                  : "Soma das contas Meta vinculadas, período selecionado"
+              }
             />
             <MetricCard
               label="Contas Meta"

@@ -1,19 +1,26 @@
 import "server-only";
 
 import type { PeriodPreset } from "@/lib/date-range";
-import { metaPresetRange, todayInOffset } from "@/lib/meta/date-preset";
+import { metaPresetRange } from "@/lib/meta/date-preset";
 import { META_ATTRIBUTION_QUERY_VALUES } from "@/lib/meta/config";
 import { parseDashboardConfig } from "@/lib/dashboard-config";
-import { metaUiStateFromRow, type MetaUiState } from "@/lib/meta/connection-state";
+import type { MetaUiState } from "@/lib/meta/connection-state";
+import {
+  aggregateClientMetaState,
+  type ClientAccountLinkInfo,
+  type ClientConnectionInfo,
+} from "@/lib/meta/agency-meta-status";
 import type {
   PerformanceStatus,
   LastSyncStatus,
   CreativesStatus,
 } from "@/lib/meta/sync-health";
 import {
+  agencyToday,
   buildClientAggregate,
   combineAccountPeriods,
   computeAgencyTotals,
+  computeCoverage,
   emptyAccountPeriod,
   groupResultsByType,
   summarizeHealth,
@@ -22,6 +29,7 @@ import {
   type AccountPeriodInput,
   type AgencyTotals,
   type ClientAggregate,
+  type DataCoverage,
   type ResultGroup,
   type TopClientBySpend,
   type HealthCounts,
@@ -78,6 +86,8 @@ export interface AgencyOverview {
   clients: AgencyOverviewClientRow[];
   /** performance_synced_at mais recente entre os clientes — para o header. */
   lastUpdatedAt: string | null;
+  /** cobertura de dado no período — para nunca apresentar soma parcial como completa. */
+  coverage: DataCoverage;
 }
 
 function emptyOverview(preset: PeriodPreset, range: { start: string; end: string }, ok: boolean): AgencyOverview {
@@ -103,6 +113,7 @@ function emptyOverview(preset: PeriodPreset, range: { start: string; end: string
     topClientsBySpend: [],
     clients: [],
     lastUpdatedAt: null,
+    coverage: { withData: 0, total: 0 },
   };
 }
 
@@ -114,7 +125,9 @@ function emptyOverview(preset: PeriodPreset, range: { start: string; end: string
  * (`can_access_client`) se aplica a CADA tabela, mesmo agrupando por IN.
  */
 export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOverview> {
-  const today = todayInOffset(0); // referência única (UTC) p/ agregado agency-wide
+  // "hoje" no fuso da AGÊNCIA (America/Sao_Paulo) — não no fuso de cada conta
+  // (isso não muda) nem em UTC. Ver lib/meta/agency-overview.ts#agencyToday.
+  const today = agencyToday();
   const range = metaPresetRange(preset, today);
 
   try {
@@ -141,14 +154,13 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
     ] = await Promise.all([
       supabase
         .from("meta_ad_accounts")
-        .select("client_id, ad_account_id, account_name")
+        .select("client_id, ad_account_id, account_name, connection_id")
         .in("client_id", clientIds)
         .eq("is_linked", true),
       supabase
         .from("meta_connections")
-        .select("client_id, status, has_secret, created_at")
-        .in("client_id", clientIds)
-        .order("created_at", { ascending: false }),
+        .select("id, client_id, status, has_secret")
+        .in("client_id", clientIds),
       supabase
         .from("dashboard_configs")
         .select("client_id, result_metric")
@@ -164,24 +176,39 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
     const accounts = (accountsData ?? []) as {
       client_id: string;
       ad_account_id: string;
+      connection_id: string | null;
     }[];
     const accountIds = accounts.map((a) => a.ad_account_id);
     const clientAccountIds = new Map<string, string[]>();
+    // contas RELEVANTES p/ o estado Meta agregado (is_linked=true + sua connection).
+    const accountLinksByClient = new Map<string, ClientAccountLinkInfo[]>();
     for (const a of accounts) {
-      const list = clientAccountIds.get(a.client_id);
-      if (list) list.push(a.ad_account_id);
+      const idsList = clientAccountIds.get(a.client_id);
+      if (idsList) idsList.push(a.ad_account_id);
       else clientAccountIds.set(a.client_id, [a.ad_account_id]);
+
+      const link: ClientAccountLinkInfo = { connectionId: a.connection_id, isLinked: true };
+      const linksList = accountLinksByClient.get(a.client_id);
+      if (linksList) linksList.push(link);
+      else accountLinksByClient.set(a.client_id, [link]);
     }
 
-    // conexão mais recente por cliente (dados já vêm ORDER BY created_at desc).
-    const connectionByClient = new Map<string, MetaUiState>();
+    // TODAS as connections do cliente (não só a mais recente) — a agregação
+    // de estado descarta as que não são referenciadas por nenhuma conta
+    // is_linked=true (órfãs/desvinculadas não podem poluir o status).
+    const connectionsByClient = new Map<string, ClientConnectionInfo[]>();
     for (const row of (connectionsData ?? []) as Record<string, unknown>[]) {
       const clientId = str(row.client_id);
-      if (!clientId || connectionByClient.has(clientId)) continue;
-      connectionByClient.set(
-        clientId,
-        metaUiStateFromRow({ status: row.status, has_secret: row.has_secret }),
-      );
+      const connectionId = str(row.id);
+      if (!clientId || !connectionId) continue;
+      const info: ClientConnectionInfo = {
+        connectionId,
+        status: row.status,
+        hasSecret: row.has_secret,
+      };
+      const list = connectionsByClient.get(clientId);
+      if (list) list.push(info);
+      else connectionsByClient.set(clientId, [info]);
     }
 
     const resultTypeByClient = new Map<string, ResultMetricType>();
@@ -291,10 +318,14 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
       clientAggregates.push(aggregate);
 
       const health = healthByClient.get(client.id);
+      const metaState = aggregateClientMetaState(
+        connectionsByClient.get(client.id) ?? [],
+        accountLinksByClient.get(client.id) ?? [],
+      );
       rows.push({
         clientId: client.id,
         name: client.name,
-        metaState: connectionByClient.get(client.id) ?? "not_connected",
+        metaState,
         linkedAccountCount: accIds.length,
         aggregate,
         performanceStatus: health?.performanceStatus ?? "never",
@@ -339,6 +370,7 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
       topClientsBySpend: topClientsBySpend(clientAggregates),
       clients: rows,
       lastUpdatedAt,
+      coverage: computeCoverage(clientAggregates),
     };
   } catch {
     return emptyOverview(preset, range, false);

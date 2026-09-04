@@ -20,7 +20,7 @@ describe("ResultGroups — sem cards vazios de métrica inexistente", () => {
 
   it("um grupo -> mostra só aquele tipo, com custo/resultado", () => {
     const groups: ResultGroup[] = [
-      { canonicalId: "messaging_conversations_started", label: "Conversas iniciadas", spend: 932, results: 620, costPerResult: 932 / 620, clientCount: 1 },
+      { canonicalId: "messaging_conversations_started", label: "Conversas iniciadas", spend: 932, results: 620, costPerResult: 932 / 620, clientCount: 1, totalConfiguredCount: 1 },
     ];
     const html = renderToStaticMarkup(<ResultGroups groups={groups} />);
     expect(html).toContain("Conversas iniciadas");
@@ -31,7 +31,7 @@ describe("ResultGroups — sem cards vazios de métrica inexistente", () => {
 
   it("resultado com custo/resultado null -> mostra travessão, nunca NaN/Infinity", () => {
     const groups: ResultGroup[] = [
-      { canonicalId: "leads", label: "Leads", spend: 100, results: 0, costPerResult: null, clientCount: 1 },
+      { canonicalId: "leads", label: "Leads", spend: 100, results: 0, costPerResult: null, clientCount: 1, totalConfiguredCount: 1 },
     ];
     const html = renderToStaticMarkup(<ResultGroups groups={groups} />);
     expect(html).toContain("—");

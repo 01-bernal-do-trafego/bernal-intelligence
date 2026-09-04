@@ -28,6 +28,26 @@ import {
   resolveResults,
 } from "@/lib/meta/result-metric-resolve";
 import { resultMetricTypeLabel } from "@/lib/dashboard-config";
+import { todayInOffset } from "@/lib/meta/date-preset";
+import { utcOffsetMinutes } from "@/lib/meta/timezone";
+
+/**
+ * Fuso da AGÊNCIA (não confundir com o fuso de cada ad account, usado na
+ * ingestão/sync — esse continua intocado). "Hoje"/"Ontem"/"Este mês"/"Mês
+ * passado" da Agency Overview usam ESTE fuso, para bater com a percepção de
+ * quem está olhando o painel em Brasília, e não com UTC.
+ */
+export const AGENCY_TIMEZONE = "America/Sao_Paulo";
+
+/**
+ * "Hoje" da Agency Overview no fuso da agência. Reaproveita `todayInOffset` +
+ * `utcOffsetMinutes` (mesma infraestrutura já usada por conta no dashboard
+ * individual — `lib/meta/date-preset.ts` / `lib/meta/timezone.ts`), só que
+ * com um fuso FIXO em vez do fuso de uma conta específica.
+ */
+export function agencyToday(now: Date = new Date()): string {
+  return todayInOffset(utcOffsetMinutes(AGENCY_TIMEZONE) ?? -180, now);
+}
 import { metaNeedsAction, type MetaUiState } from "@/lib/meta/connection-state";
 import type { PerformanceStatus, LastSyncStatus } from "@/lib/meta/sync-health";
 import type { ResultMetricType } from "@/types/domain";
@@ -169,6 +189,22 @@ export function computeAgencyTotals(
   };
 }
 
+/**
+ * Cobertura de dado no período — quantos dos clientes considerados têm dado
+ * (`hasData`) vs. o total. Não substitui "sem dado" por 0 em lugar nenhum;
+ * serve só para a UI avisar quando um total é uma soma PARCIAL ("6 de 10
+ * clientes com dados"), nunca apresentando cobertura parcial como completa
+ * silenciosamente.
+ */
+export interface DataCoverage {
+  withData: number;
+  total: number;
+}
+
+export function computeCoverage(clients: readonly ClientAggregate[]): DataCoverage {
+  return { withData: clients.filter((c) => c.hasData).length, total: clients.length };
+}
+
 /* ================================================================== */
 /* Resultados AGRUPADOS por tipo (nunca somar tipos diferentes)        */
 /* ================================================================== */
@@ -181,38 +217,56 @@ export interface ResultGroup {
   results: number;
   /** SUM(spend)/SUM(results) do grupo — NUNCA média dos cost_per_result individuais. */
   costPerResult: number | null;
+  /** clientes com DADO no período (somados acima). */
   clientCount: number;
+  /**
+   * TODOS os clientes configurados com esse tipo canônico, com ou sem dado no
+   * período — para a UI avisar cobertura parcial ("2 de 3 clientes com
+   * dados") sem transformar ausência em zero.
+   */
+  totalConfiguredCount: number;
 }
 
 /**
- * Agrupa clientes pelo `result_metric` CANÔNICO configurado. Só entram
- * clientes com dado no período E com uma métrica canônica definida
- * (`results`/`custom` não têm — ficam de fora do agrupamento, mas continuam
- * visíveis na tabela operacional). Um cliente com dado real mas ZERO eventos
- * no período contribui 0 aos `results` do grupo (soma correta), mas seu
- * `spend` real ainda entra — nunca se perde investimento na soma.
+ * Agrupa clientes pelo `result_metric` CANÔNICO configurado. Um cliente com
+ * dado real mas ZERO eventos no período contribui 0 aos `results` do grupo
+ * (soma correta), mas seu `spend` real ainda entra — nunca se perde
+ * investimento na soma. `results`/`custom` (sem canônica) nunca entram, com
+ * ou sem dado. Um grupo só aparece se PELO MENOS 1 cliente tiver dado —
+ * senão os números seriam um "0" inventado, não uma soma real.
  */
 export function groupResultsByType(
   clients: readonly ClientAggregate[],
 ): ResultGroup[] {
   const groups = new Map<
     string,
-    { spend: number; results: number; clientCount: number; label: string }
+    {
+      spend: number;
+      results: number;
+      clientCount: number;
+      totalConfiguredCount: number;
+      label: string;
+    }
   >();
   for (const c of clients) {
-    if (!c.hasData || c.canonicalResultId === null) continue;
+    if (c.canonicalResultId === null) continue;
     const g = groups.get(c.canonicalResultId) ?? {
       spend: 0,
       results: 0,
       clientCount: 0,
+      totalConfiguredCount: 0,
       label: resultMetricTypeLabel(c.canonicalResultId as ResultMetricType),
     };
-    g.spend += c.spend ?? 0;
-    g.results += c.results ?? 0;
-    g.clientCount += 1;
+    g.totalConfiguredCount += 1;
+    if (c.hasData) {
+      g.spend += c.spend ?? 0;
+      g.results += c.results ?? 0;
+      g.clientCount += 1;
+    }
     groups.set(c.canonicalResultId, g);
   }
   return [...groups.entries()]
+    .filter(([, g]) => g.clientCount > 0)
     .map(([canonicalId, g]) => ({
       canonicalId,
       label: g.label,
@@ -220,6 +274,7 @@ export function groupResultsByType(
       results: g.results,
       costPerResult: g.results > 0 ? g.spend / g.results : null,
       clientCount: g.clientCount,
+      totalConfiguredCount: g.totalConfiguredCount,
     }))
     .sort((a, b) => b.results - a.results);
 }

@@ -28,6 +28,9 @@ export function ResultGroups({ groups }: { groups: readonly ResultGroup[] }) {
             <span className="text-xs text-muted">
               Custo por resultado: {formatCurrencyOrDash(group.costPerResult)} ·{" "}
               {group.clientCount} {group.clientCount === 1 ? "cliente" : "clientes"}
+              {group.totalConfiguredCount > group.clientCount
+                ? ` (${group.clientCount} de ${group.totalConfiguredCount} com dados)`
+                : ""}
             </span>
           </div>
         ))}

@@ -11,6 +11,7 @@ import {
   buildClientAggregate,
   combineAccountPeriods,
   computeAgencyTotals,
+  computeCoverage,
   emptyAccountPeriod,
   groupResultsByType,
   summarizeHealth,
@@ -18,6 +19,9 @@ import {
   type AccountPeriodInput,
   type ClientAggregate,
 } from "@/lib/meta/agency-overview";
+import { conversionTotalsFromRow } from "@/lib/meta/conversion-events";
+import { computeMetric } from "@/lib/metrics/compute";
+import { resolveCostPerResult, resolveResults } from "@/lib/meta/result-metric-resolve";
 
 const acc = (o: Partial<AccountPeriodInput>): AccountPeriodInput => ({
   ...emptyAccountPeriod(),
@@ -326,5 +330,178 @@ describe("summarizeHealth", () => {
       { performanceStatus: "fresh", lastSyncStatus: "success", metaState: "connected" },
     ]);
     expect(counts.attentionCount).toBe(0);
+  });
+});
+
+describe("RECONCILIAÇÃO — cliente de 1 conta bate com o dashboard individual", () => {
+  // Mesmo formato de linha que meta_insights_periodic entrega (nível conta,
+  // period_key do preset, attribution_window canônica) — tanto a Agency
+  // Overview quanto o dashboard individual leem a MESMA linha para um
+  // cliente de conta única.
+  const periodicRow = {
+    spend: 920.95,
+    impressions: 62526,
+    clicks: 3527,
+    raw_actions: { "onsite_conversion.messaging_conversation_started_7d": 617 },
+    raw_action_values: {},
+  };
+
+  it("CTR/CPC/CPM/Resultados/Custo-por-resultado idênticos ao cálculo do dashboard individual", () => {
+    // caminho AGENCY OVERVIEW
+    const agency = buildClientAggregate({
+      clientId: "c1",
+      name: "Atacado do Chinelo",
+      resultType: "messaging_conversations_started",
+      period: {
+        spend: periodicRow.spend,
+        impressions: periodicRow.impressions,
+        clicks: periodicRow.clicks,
+        rawActions: periodicRow.raw_actions,
+        rawActionValues: periodicRow.raw_action_values,
+      },
+    });
+
+    // caminho DASHBOARD INDIVIDUAL (mesmas peças que server/real-dashboard.ts usa)
+    const individualTotals = conversionTotalsFromRow(periodicRow);
+    const individual = {
+      ctr: computeMetric("ctr", individualTotals),
+      cpc: computeMetric("cpc", individualTotals),
+      cpm: computeMetric("cpm", individualTotals),
+      results: resolveResults(individualTotals, "messaging_conversations_started"),
+      costPerResult: resolveCostPerResult(individualTotals, "messaging_conversations_started"),
+    };
+
+    expect(agency.spend).toBe(periodicRow.spend);
+    expect(agency.ctr).toBe(individual.ctr);
+    expect(agency.cpc).toBe(individual.cpc);
+    expect(agency.cpm).toBe(individual.cpm);
+    expect(agency.results).toBe(individual.results);
+    expect(agency.results).toBe(617);
+    expect(agency.costPerResult).toBe(individual.costPerResult);
+    expect(agency.costPerResult).toBeCloseTo(920.95 / 617, 6);
+  });
+
+  it("único cliente com dado -> Investimento gerenciado da agência = spend dele", () => {
+    const agency = buildClientAggregate({
+      clientId: "c1",
+      name: "Atacado do Chinelo",
+      resultType: "messaging_conversations_started",
+      period: {
+        spend: periodicRow.spend,
+        impressions: periodicRow.impressions,
+        clicks: periodicRow.clicks,
+        rawActions: periodicRow.raw_actions,
+        rawActionValues: periodicRow.raw_action_values,
+      },
+    });
+    const semDado = buildClientAggregate({
+      clientId: "c2",
+      name: "Cliente sem Meta",
+      resultType: "results",
+      period: emptyAccountPeriod(),
+    });
+    const totals = computeAgencyTotals([agency, semDado]);
+    expect(totals.spend).toBe(agency.spend);
+  });
+});
+
+describe("computeCoverage", () => {
+  it("cobertura completa: todos com dado", () => {
+    const client = (hasData: boolean): ClientAggregate => ({
+      clientId: "c",
+      name: "C",
+      resultType: "leads",
+      resultLabel: "Leads",
+      canonicalResultId: "leads",
+      hasData,
+      spend: hasData ? 100 : null,
+      impressions: null,
+      clicks: null,
+      ctr: null,
+      cpc: null,
+      cpm: null,
+      results: null,
+      costPerResult: null,
+    });
+    expect(computeCoverage([client(true), client(true)])).toEqual({ withData: 2, total: 2 });
+  });
+  it("cobertura parcial: 6 de 10", () => {
+    const client = (hasData: boolean): ClientAggregate => ({
+      clientId: "c",
+      name: "C",
+      resultType: "leads",
+      resultLabel: "Leads",
+      canonicalResultId: "leads",
+      hasData,
+      spend: hasData ? 100 : null,
+      impressions: null,
+      clicks: null,
+      ctr: null,
+      cpc: null,
+      cpm: null,
+      results: null,
+      costPerResult: null,
+    });
+    const clients = [
+      ...Array.from({ length: 6 }, () => client(true)),
+      ...Array.from({ length: 4 }, () => client(false)),
+    ];
+    expect(computeCoverage(clients)).toEqual({ withData: 6, total: 10 });
+  });
+  it("nenhum dado -> 0 de N", () => {
+    const client: ClientAggregate = {
+      clientId: "c",
+      name: "C",
+      resultType: "leads",
+      resultLabel: "Leads",
+      canonicalResultId: "leads",
+      hasData: false,
+      spend: null,
+      impressions: null,
+      clicks: null,
+      ctr: null,
+      cpc: null,
+      cpm: null,
+      results: null,
+      costPerResult: null,
+    };
+    expect(computeCoverage([client, client])).toEqual({ withData: 0, total: 2 });
+  });
+});
+
+describe("groupResultsByType — cobertura parcial no grupo", () => {
+  const client = (o: Partial<ClientAggregate>): ClientAggregate => ({
+    clientId: "c",
+    name: "C",
+    resultType: "leads",
+    resultLabel: "Leads",
+    canonicalResultId: "leads",
+    hasData: true,
+    spend: 100,
+    impressions: null,
+    clicks: null,
+    ctr: null,
+    cpc: null,
+    cpm: null,
+    results: 10,
+    costPerResult: 10,
+    ...o,
+  });
+
+  it("2 configurados, só 1 com dado -> totalConfiguredCount=2, clientCount=1", () => {
+    const groups = groupResultsByType([
+      client({ clientId: "a", hasData: true, spend: 100, results: 10 }),
+      client({ clientId: "b", hasData: false, spend: null, results: null }),
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]).toMatchObject({ clientCount: 1, totalConfiguredCount: 2 });
+  });
+
+  it("todos com dado -> clientCount === totalConfiguredCount (sem nota de cobertura)", () => {
+    const groups = groupResultsByType([
+      client({ clientId: "a" }),
+      client({ clientId: "b" }),
+    ]);
+    expect(groups[0].clientCount).toBe(groups[0].totalConfiguredCount);
   });
 });
