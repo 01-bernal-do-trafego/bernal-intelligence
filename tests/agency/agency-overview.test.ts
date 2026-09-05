@@ -14,6 +14,7 @@ import {
   computeCoverage,
   emptyAccountPeriod,
   groupResultsByType,
+  hasMixedAgencyTimezones,
   summarizeHealth,
   topClientsBySpend,
   type AccountPeriodInput,
@@ -503,5 +504,30 @@ describe("groupResultsByType — cobertura parcial no grupo", () => {
       client({ clientId: "b" }),
     ]);
     expect(groups[0].clientCount).toBe(groups[0].totalConfiguredCount);
+  });
+});
+
+describe("hasMixedAgencyTimezones", () => {
+  it("todas America/Sao_Paulo (ou null) -> false", () => {
+    expect(hasMixedAgencyTimezones(["America/Sao_Paulo", "America/Sao_Paulo"])).toBe(false);
+    expect(hasMixedAgencyTimezones([null, "America/Sao_Paulo", undefined])).toBe(false);
+    expect(hasMixedAgencyTimezones([])).toBe(false);
+  });
+  it("alguma conta em outro fuso -> true", () => {
+    expect(hasMixedAgencyTimezones(["America/Sao_Paulo", "America/New_York"])).toBe(true);
+    expect(hasMixedAgencyTimezones(["Europe/Lisbon"])).toBe(true);
+  });
+});
+
+describe("AccountPeriodInput — Agency Overview NÃO reconstrói reach/frequency", () => {
+  it("combineAccountPeriods não produz campos de reach/frequency", () => {
+    const out = combineAccountPeriods([
+      { spend: 10, impressions: 100, clicks: 1, rawActions: {}, rawActionValues: {} },
+    ]);
+    expect(Object.keys(out).sort()).toEqual(
+      ["clicks", "impressions", "rawActionValues", "rawActions", "spend"].sort(),
+    );
+    expect("reach" in out).toBe(false);
+    expect("frequency" in out).toBe(false);
   });
 });

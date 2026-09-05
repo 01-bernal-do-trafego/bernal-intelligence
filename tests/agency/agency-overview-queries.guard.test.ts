@@ -38,9 +38,22 @@ describe("meta_insights_periodic — TOTAL DO PERÍODO", () => {
       /from\("meta_insights_periodic"\)[\s\S]*?\.in\("attribution_window",\s*ATTR_VALUES\)/,
     );
   });
-  it("só 1 linha autoritativa por conta — pega a mais recente e ignora repetidas", () => {
-    expect(insightsBlock).toMatch(/order\("date_to",\s*\{\s*ascending:\s*false\s*\}\)/);
-    expect(src).toMatch(/periodicByAccount\.has\(entityId\)\)\s*continue/);
+  it("traz date_from/date_to/attribution_window p/ a seleção autoritativa", () => {
+    expect(insightsBlock).toMatch(
+      /from\("meta_insights_periodic"\)\s*\.select\(\s*"[^"]*date_from[^"]*date_to[^"]*attribution_window/,
+    );
+  });
+  it("NÃO decide pela 'linha mais recente' (sem .order date_to)", () => {
+    // o bug antigo: period_key + maior date_to. Agora a regra é intervalo EXATO.
+    expect(insightsBlock).not.toMatch(/from\("meta_insights_periodic"\)[\s\S]*?\.order\(/);
+  });
+  it("seleção autoritativa delegada à função pura compartilhada (intervalo exato)", () => {
+    expect(src).toMatch(
+      /selectAuthoritativePeriodicByEntity\(\s*\(periodicData[\s\S]*?\{\s*from:\s*range\.start,\s*to:\s*range\.end\s*\}/,
+    );
+    expect(src).toContain(
+      'import { selectAuthoritativePeriodicByEntity } from "@/lib/meta/periodic-select"',
+    );
   });
 });
 
@@ -65,5 +78,23 @@ describe("meta_insights_daily — GRÁFICO temporal", () => {
 describe("nenhuma query de insights usa level diferente de 'account'", () => {
   it('não há .eq("level", "campaign"|"adset"|"ad") neste arquivo', () => {
     expect(src).not.toMatch(/\.eq\("level",\s*"(campaign|adset|ad)"\)/);
+  });
+});
+
+describe("dashboard individual usa a MESMA seleção canônica compartilhada", () => {
+  const realDash = readFileSync(
+    fileURLToPath(new URL("../../server/real-dashboard.ts", import.meta.url)),
+    "utf8",
+  );
+  it("real-dashboard.ts importa de @/lib/meta/periodic-select", () => {
+    expect(realDash).toMatch(/from "@\/lib\/meta\/periodic-select"/);
+    expect(realDash).toMatch(/selectAuthoritativePeriodicRow/);
+    expect(realDash).toMatch(/selectAuthoritativePeriodicByEntity/);
+  });
+  it("real-dashboard.ts não decide mais pela 'linha mais recente' (sem .order date_to na periodic)", () => {
+    expect(realDash).not.toMatch(/meta_insights_periodic"\)[\s\S]{0,400}?\.order\("date_to"/);
+  });
+  it("passa o range EXATO (from: range.start, to: range.end) para a seleção", () => {
+    expect(realDash).toMatch(/\{\s*from:\s*range\.start,\s*to:\s*range\.end\s*\}/);
   });
 });

@@ -103,6 +103,14 @@ export default async function HomePage({ searchParams }: HomePageProps) {
             </div>
             <AgencyClientsTable rows={overview.clients} />
           </section>
+
+          {overview.hasMixedTimezones && (
+            <p className="text-xs text-muted">
+              Algumas contas usam outro fuso horário. Os totais de período dessas
+              contas são calculados no calendário da agência (America/Sao_Paulo) —
+              aproximação nas viradas de dia.
+            </p>
+          )}
         </>
       )}
     </div>

@@ -17,6 +17,10 @@ import {
 import { utcOffsetMinutes } from "@/lib/meta/timezone";
 import { META_ATTRIBUTION_QUERY_VALUES } from "@/lib/meta/config";
 import {
+  selectAuthoritativePeriodicByEntity,
+  selectAuthoritativePeriodicRow,
+} from "@/lib/meta/periodic-select";
+import {
   REACH_MULTI_ACCOUNT_NOTE,
   REACH_NOT_SYNCED_NOTE,
   buildRealTotals,
@@ -324,20 +328,23 @@ export async function getRealClientDashboard(
   // Só usa o agregado quando o escopo é consolidável (1 conta / conta / campanha).
   // Multi-conta "todas": totais das aditivas vêm da soma do diário entre contas.
   if (consolidable && reachEntity) {
+    // Autoritativo SÓ se a linha for do INTERVALO EXATO do range (mesmo fuso
+    // da conta usado aqui e no sync). `period_key` + maior `date_to` deixava
+    // passar janela defasada 1 dia. Sem linha exata -> cai no diário abaixo.
     const { data: perData } = await supabase
       .from("meta_insights_periodic")
       .select(
-        "spend, impressions, clicks, inline_link_clicks, reach, frequency, date_from, date_to, actions, action_values, raw_actions, raw_action_values",
+        "entity_id, spend, impressions, clicks, inline_link_clicks, reach, frequency, date_from, date_to, attribution_window, actions, action_values, raw_actions, raw_action_values",
       )
       .eq("client_id", client.id)
       .eq("level", level)
       .eq("entity_id", reachEntity)
       .eq("period_key", preset)
-      .in("attribution_window", ATTR_VALUES)
-      .order("date_to", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    const p = perData as Record<string, unknown> | null;
+      .in("attribution_window", ATTR_VALUES);
+    const p = selectAuthoritativePeriodicRow(
+      (perData ?? []) as Record<string, unknown>[],
+      { from: range.start, to: range.end },
+    );
     if (p) {
       periodicRow = {
         spend: num(p.spend),
@@ -532,13 +539,12 @@ export async function getRealClientDashboard(
     supabase
       .from("meta_insights_periodic")
       .select(
-        "entity_id, date_to, spend, impressions, clicks, reach, actions, action_values, raw_actions, raw_action_values",
+        "entity_id, date_from, date_to, attribution_window, spend, impressions, clicks, reach, actions, action_values, raw_actions, raw_action_values",
       )
       .eq("client_id", client.id)
       .eq("level", "campaign")
       .eq("period_key", preset)
-      .in("attribution_window", ATTR_VALUES)
-      .order("date_to", { ascending: false }),
+      .in("attribution_window", ATTR_VALUES),
     supabase
       .from("meta_insights_daily")
       .select("entity_id, spend, impressions, clicks, raw_actions, raw_action_values")
@@ -548,11 +554,11 @@ export async function getRealClientDashboard(
       .gte("date", range.start)
       .lte("date", range.end),
   ]);
-  const latestPerCamp = new Map<string, Record<string, unknown>>();
-  for (const r of (perCampData ?? []) as Record<string, unknown>[]) {
-    const id = String(r.entity_id);
-    if (!latestPerCamp.has(id)) latestPerCamp.set(id, r);
-  }
+  // periódico autoritativo por campanha: intervalo EXATO + unified-first.
+  const latestPerCamp = selectAuthoritativePeriodicByEntity(
+    (perCampData ?? []) as Record<string, unknown>[],
+    { from: range.start, to: range.end },
+  );
   // fallback aditivo somando o diário por campanha no intervalo — usado quando
   // o agregado periódico do preset ainda não existe. Inclui os eventos crus
   // para as colunas de conversão.

@@ -3,6 +3,7 @@ import "server-only";
 import type { PeriodPreset } from "@/lib/date-range";
 import { metaPresetRange } from "@/lib/meta/date-preset";
 import { META_ATTRIBUTION_QUERY_VALUES } from "@/lib/meta/config";
+import { selectAuthoritativePeriodicByEntity } from "@/lib/meta/periodic-select";
 import { parseDashboardConfig } from "@/lib/dashboard-config";
 import type { MetaUiState } from "@/lib/meta/connection-state";
 import {
@@ -23,6 +24,7 @@ import {
   computeCoverage,
   emptyAccountPeriod,
   groupResultsByType,
+  hasMixedAgencyTimezones,
   summarizeHealth,
   topClientsBySpend,
   aggregateDailySpend,
@@ -88,6 +90,15 @@ export interface AgencyOverview {
   lastUpdatedAt: string | null;
   /** cobertura de dado no período — para nunca apresentar soma parcial como completa. */
   coverage: DataCoverage;
+  /**
+   * Alguma conta vinculada usa fuso != AGENCY_TIMEZONE. Quando true, os totais
+   * de período dessas contas são best-effort (o range é interpretado no
+   * calendário da agência; `meta_insights_daily`/`periodic` guardam datas no
+   * calendário DA CONTA — sem granularidade horária não há equivalência
+   * perfeita nas fronteiras). Exposto para não perdermos o conhecimento da
+   * limitação; sem alerta visual complexo na V1.
+   */
+  hasMixedTimezones: boolean;
 }
 
 function emptyOverview(preset: PeriodPreset, range: { start: string; end: string }, ok: boolean): AgencyOverview {
@@ -114,6 +125,7 @@ function emptyOverview(preset: PeriodPreset, range: { start: string; end: string
     clients: [],
     lastUpdatedAt: null,
     coverage: { withData: 0, total: 0 },
+    hasMixedTimezones: false,
   };
 }
 
@@ -123,6 +135,21 @@ function emptyOverview(preset: PeriodPreset, range: { start: string; end: string
  * Meta, configs de dashboard, saúde de sync (view), agregados periódicos e
  * diários — tudo com `IN (...)`, nunca 1 query por cliente. RLS de sessão
  * (`can_access_client`) se aplica a CADA tabela, mesmo agrupando por IN.
+ *
+ * ── TOTAL DO PERÍODO x MULTI-TIMEZONE (limitação técnica conhecida da V1) ──
+ * O range dos presets é interpretado no CALENDÁRIO DA AGÊNCIA
+ * (`AGENCY_TIMEZONE`). `meta_insights_periodic`/`meta_insights_daily` guardam
+ * datas no CALENDÁRIO DE CADA CONTA (o sync usa `accountToday(tz)`).
+ *   - Conta no mesmo fuso da agência: a linha periódica do intervalo EXATO
+ *     casa -> total autoritativo exato. Sem ela -> soma do diário no mesmo
+ *     intervalo, também exato.
+ *   - Conta em OUTRO fuso: o intervalo exato provavelmente não casa
+ *     (`selectAuthoritativePeriodic*` devolve null) -> soma do diário filtrado
+ *     pelos MESMOS date labels. Sem granularidade horária, uma fronteira
+ *     00:00→00:00 no fuso da agência NÃO é reconstruível perfeitamente para
+ *     essa conta — o diário aqui é um fallback DETERMINÍSTICO e best-effort,
+ *     não uma equivalência temporal perfeita. `hasMixedTimezones` sinaliza
+ *     isso na camada de dados. V1 NÃO cria hourly sync nem bloqueia a tela.
  */
 export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOverview> {
   // "hoje" no fuso da AGÊNCIA (America/Sao_Paulo) — não no fuso de cada conta
@@ -154,7 +181,7 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
     ] = await Promise.all([
       supabase
         .from("meta_ad_accounts")
-        .select("client_id, ad_account_id, account_name, connection_id")
+        .select("client_id, ad_account_id, account_name, connection_id, timezone_name")
         .in("client_id", clientIds)
         .eq("is_linked", true),
       supabase
@@ -177,8 +204,13 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
       client_id: string;
       ad_account_id: string;
       connection_id: string | null;
+      timezone_name: string | null;
     }[];
     const accountIds = accounts.map((a) => a.ad_account_id);
+    // Contas cujo fuso != calendário da agência -> totais de período best-effort.
+    const hasMixedTimezones = hasMixedAgencyTimezones(
+      accounts.map((a) => a.timezone_name),
+    );
     const clientAccountIds = new Map<string, string[]>();
     // contas RELEVANTES p/ o estado Meta agregado (is_linked=true + sua connection).
     const accountLinksByClient = new Map<string, ClientAccountLinkInfo[]>();
@@ -247,12 +279,13 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
         : await Promise.all([
             supabase
               .from("meta_insights_periodic")
-              .select("entity_id, date_to, spend, impressions, clicks, raw_actions, raw_action_values")
+              .select(
+                "entity_id, date_from, date_to, attribution_window, spend, impressions, clicks, raw_actions, raw_action_values",
+              )
               .eq("level", "account")
               .eq("period_key", preset)
               .in("entity_id", accountIds)
-              .in("attribution_window", ATTR_VALUES)
-              .order("date_to", { ascending: false }),
+              .in("attribution_window", ATTR_VALUES),
             supabase
               .from("meta_insights_daily")
               .select("entity_id, date, spend, impressions, clicks, raw_actions, raw_action_values")
@@ -271,11 +304,17 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
       rawActionValues: asRawMap(row.raw_action_values),
     });
 
-    // periódico: 1 linha (a mais recente) por conta — autoritativa quando existe.
+    // periódico AUTORITATIVO por conta: só a linha do INTERVALO EXATO do range
+    // (date_from/date_to == range.start/range.end), unified_attribution primeiro,
+    // legado só como fallback de compat. `period_key` sozinho NÃO basta (linha
+    // antiga do mesmo preset = defasagem silenciosa). Sem linha exata -> a
+    // conta cai no fallback de meta_insights_daily abaixo.
+    const authoritativePeriodic = selectAuthoritativePeriodicByEntity(
+      (periodicData ?? []) as Record<string, unknown>[],
+      { from: range.start, to: range.end },
+    );
     const periodicByAccount = new Map<string, AccountPeriodInput>();
-    for (const row of (periodicData ?? []) as Record<string, unknown>[]) {
-      const entityId = str(row.entity_id);
-      if (!entityId || periodicByAccount.has(entityId)) continue;
+    for (const [entityId, row] of authoritativePeriodic) {
       periodicByAccount.set(entityId, toAccountPeriod(row));
     }
 
@@ -371,6 +410,7 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
       clients: rows,
       lastUpdatedAt,
       coverage: computeCoverage(clientAggregates),
+      hasMixedTimezones,
     };
   } catch {
     return emptyOverview(preset, range, false);

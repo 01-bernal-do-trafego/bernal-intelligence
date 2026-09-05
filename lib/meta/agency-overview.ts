@@ -48,6 +48,18 @@ export const AGENCY_TIMEZONE = "America/Sao_Paulo";
 export function agencyToday(now: Date = new Date()): string {
   return todayInOffset(utcOffsetMinutes(AGENCY_TIMEZONE) ?? -180, now);
 }
+
+/**
+ * Alguma conta usa fuso != AGENCY_TIMEZONE? Quando true, os totais de período
+ * dessas contas são best-effort (o range é do calendário da agência; os
+ * insights guardam datas no calendário DA CONTA — sem hora, não há
+ * equivalência perfeita nas fronteiras). `null`/vazio -> mesmo fuso.
+ */
+export function hasMixedAgencyTimezones(
+  timezoneNames: readonly (string | null | undefined)[],
+): boolean {
+  return timezoneNames.some((tz) => tz != null && tz !== AGENCY_TIMEZONE);
+}
 import { metaNeedsAction, type MetaUiState } from "@/lib/meta/connection-state";
 import type { PerformanceStatus, LastSyncStatus } from "@/lib/meta/sync-health";
 import type { ResultMetricType } from "@/types/domain";
