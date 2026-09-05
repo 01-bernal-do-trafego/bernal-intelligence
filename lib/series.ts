@@ -6,6 +6,12 @@ export interface ZippedPoint {
   previous: number | null;
 }
 
+/** Par de séries (atual / anterior) — consumido pelos gráficos do dashboard. */
+export interface SeriesPair {
+  current: TimePoint[];
+  previous: TimePoint[] | null;
+}
+
 /**
  * Alinha série atual e anterior por índice (mesmo comprimento) para consumo
  * direto pelos gráficos. A data exibida é sempre a do período atual.

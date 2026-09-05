@@ -56,7 +56,7 @@ import type {
   MetricFormat,
   MetricKey,
 } from "./client-dashboard";
-import type { SeriesPair } from "./portfolio";
+import type { SeriesPair } from "@/lib/series";
 
 // Transição: aceita o identificador novo (`unified_attribution`) e o legado.
 // Nunca há os dois para a mesma linha de insight -> sem ambiguidade.

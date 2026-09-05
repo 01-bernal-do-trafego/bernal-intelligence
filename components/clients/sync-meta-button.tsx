@@ -12,6 +12,35 @@ type State =
   | { kind: "error"; reason: string }
   | { kind: "done"; results: SyncRunResult[]; dateFrom: string | null; dateTo: string | null };
 
+/** Resumo amigável do resultado — sem ids de conta nem contagem de stages. */
+function DoneMessage({ results }: { results: SyncRunResult[] }) {
+  if (results.length === 0) {
+    return <span className="text-sm text-muted">Nenhuma conta para sincronizar.</span>;
+  }
+  const failed = results.filter((r) => r.status === "error").length;
+  const partial = results.filter((r) => r.status === "partial").length;
+  if (failed === results.length) {
+    return (
+      <span className="text-sm text-negative">
+        A sincronização falhou. Tente novamente em instantes.
+      </span>
+    );
+  }
+  if (failed > 0 || partial > 0) {
+    return (
+      <span className="text-sm text-warning">
+        Sincronização concluída parcialmente — parte dos dados não veio. Tente
+        novamente.
+      </span>
+    );
+  }
+  return (
+    <span className="text-sm text-positive">
+      Dados atualizados. Pode levar alguns segundos para aparecer.
+    </span>
+  );
+}
+
 export function SyncMetaButton({ clientId }: { clientId: string }) {
   const router = useRouter();
   const [state, setState] = useState<State>({ kind: "idle" });
@@ -48,39 +77,7 @@ export function SyncMetaButton({ clientId }: { clientId: string }) {
         </p>
       )}
 
-      {state.kind === "done" && (
-        <div className="flex flex-col gap-1 text-sm">
-          {state.results.length === 0 && (
-            <span className="text-muted">Nenhuma conta processada.</span>
-          )}
-          {state.results.map((r) => (
-            <span
-              key={r.adAccountId}
-              className={
-                r.status === "success"
-                  ? "text-positive"
-                  : r.status === "partial"
-                    ? "text-warning"
-                    : "text-negative"
-              }
-            >
-              {r.adAccountId}:{" "}
-              {r.error
-                ? describeDiscoveryReason(r.error)
-                : r.status === "success"
-                  ? "sincronizada"
-                  : r.status === "partial"
-                    ? "parcial — parte dos dados não veio"
-                    : "falhou"}
-              {r.stats
-                ? ` (${Number(r.stats.campaigns ?? 0)} camp. · ${Number(
-                    r.stats.ads ?? 0,
-                  )} anúncios · ${Number(r.stats.insights_daily ?? 0)} linhas/dia)`
-                : ""}
-            </span>
-          ))}
-        </div>
-      )}
+      {state.kind === "done" && <DoneMessage results={state.results} />}
     </div>
   );
 }

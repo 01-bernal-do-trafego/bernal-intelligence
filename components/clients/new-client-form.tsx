@@ -142,33 +142,30 @@ export function NewClientForm() {
             />
           </div>
 
-          <p className="text-xs text-muted">
-            O identificador do cliente (UUID) é gerado pelo banco e não depende
-            do nome da empresa.
-          </p>
         </div>
 
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="flex items-start gap-3 rounded-xl border border-border bg-surface p-5 opacity-70">
+          <div className="flex items-start gap-3 rounded-xl border border-border bg-surface p-5">
             <Lock className="mt-0.5 size-4 shrink-0 text-muted" />
             <div>
               <p className="text-sm font-medium text-foreground">
                 2 · Conectar Meta Ads
               </p>
               <p className="mt-1 text-sm text-muted">
-                Conexão via OAuth com a Meta — etapa futura, ainda não
-                implementada.
+                Depois de cadastrar, abra o perfil do cliente para conectar a
+                Meta Ads e vincular as contas de anúncio.
               </p>
             </div>
           </div>
-          <div className="flex items-start gap-3 rounded-xl border border-border bg-surface p-5 opacity-70">
+          <div className="flex items-start gap-3 rounded-xl border border-border bg-surface p-5">
             <LayoutDashboard className="mt-0.5 size-4 shrink-0 text-muted" />
             <div>
               <p className="text-sm font-medium text-foreground">
                 3 · Configurar dashboard
               </p>
               <p className="mt-1 text-sm text-muted">
-                Métrica principal, cards e gráficos do cliente — etapa futura.
+                Ajuste o resultado principal, os cards e os gráficos do cliente
+                no editor do dashboard.
               </p>
             </div>
           </div>

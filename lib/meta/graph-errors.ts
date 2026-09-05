@@ -48,6 +48,8 @@ export type DiscoveryReason =
   | "account_linked_elsewhere"
   | "no_linked_account"
   | "sync_already_running"
+  | "acquire_failed"
+  | "no_eligible_account"
   | "partial"
   | "ok";
 
@@ -71,6 +73,10 @@ const DISCOVERY_MESSAGE: Record<DiscoveryReason, string> = {
     "Nenhuma conta de anúncio vinculada. Vincule uma conta antes de sincronizar.",
   sync_already_running:
     "Já existe uma sincronização em andamento para esta conta. Aguarde ela terminar.",
+  acquire_failed:
+    "Não foi possível iniciar a sincronização agora. Tente novamente em instantes.",
+  no_eligible_account:
+    "Nenhuma conta de anúncio elegível para sincronizar. Verifique a conexão com a Meta.",
   partial:
     "A sincronização terminou parcialmente — parte dos dados não veio. Tente novamente.",
   unknown: "Não foi possível consultar a Meta. Tente novamente.",
@@ -90,6 +96,8 @@ export function parseDiscoveryReason(value: string | null | undefined): Discover
     "account_linked_elsewhere",
     "no_linked_account",
     "sync_already_running",
+    "acquire_failed",
+    "no_eligible_account",
     "partial",
     "ok",
   ];

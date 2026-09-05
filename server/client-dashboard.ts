@@ -19,7 +19,7 @@ import { getClientDataMode, type DashboardDataStatus } from "./client-data-mode"
 import { getRealClientDashboard } from "./real-dashboard";
 import { resolveRequestedPeriod } from "./period";
 import { aggregate, dailyTotals, withinRange, type DailyTotal } from "./mock-helpers";
-import type { SeriesPair } from "./portfolio";
+import type { SeriesPair } from "@/lib/series";
 
 export type MetricKey =
   | "investment"

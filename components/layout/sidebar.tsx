@@ -69,6 +69,30 @@ export function Sidebar({ open, onClose }: SidebarProps) {
         <nav className="flex-1 space-y-1 p-3">
           {NAV_ITEMS.map(({ href, label, icon: Icon, soon }) => {
             const active = isActive(pathname, href);
+            const inner = (
+              <>
+                <Icon className="size-4 shrink-0" />
+                <span className="flex-1">{label}</span>
+                {soon && (
+                  <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
+                    Em breve
+                  </span>
+                )}
+              </>
+            );
+            // Itens "Em breve" não navegam — não há página para o usuário usar.
+            if (soon) {
+              return (
+                <div
+                  key={href}
+                  aria-disabled="true"
+                  title="Disponível em uma próxima entrega"
+                  className="flex cursor-not-allowed items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted/70"
+                >
+                  {inner}
+                </div>
+              );
+            }
             return (
               <Link
                 key={href}
@@ -82,13 +106,7 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                     : "text-muted hover:bg-surface-elevated hover:text-foreground",
                 )}
               >
-                <Icon className="size-4 shrink-0" />
-                <span className="flex-1">{label}</span>
-                {soon && (
-                  <span className="rounded-full border border-border px-1.5 py-0.5 text-[10px] font-medium uppercase text-muted">
-                    Em breve
-                  </span>
-                )}
+                {inner}
               </Link>
             );
           })}

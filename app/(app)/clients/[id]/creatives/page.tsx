@@ -13,7 +13,7 @@ import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { DashboardScopeFilters } from "@/components/client-dashboard/dashboard-scope-filters";
 import { CreativesTable } from "@/components/client-dashboard/creatives-table";
 
-export const metadata: Metadata = { title: "Validar criativos" };
+export const metadata: Metadata = { title: "Criativos" };
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -48,42 +48,23 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
   const { account, period, counts, rows, resultMetric, creativeSync } = overview;
   const currency = account?.currency ?? null;
 
-  const csCodes = creativeSync.errorCodes
-    .map((e) =>
-      [
-        [e.code, e.subcode].filter((x) => x != null).join("·"),
-        e.failingFieldGroup ? `field: ${e.failingFieldGroup}` : "",
-      ]
-        .filter(Boolean)
-        .join(" "),
-    )
-    .filter(Boolean)
-    .join("; ");
   const creativeSyncBanner:
     | { tone: "warning" | "negative"; text: string }
     | null =
     creativeSync.status === "failed"
       ? {
           tone: "negative",
-          text:
-            `Dados de performance sincronizados. Falha na sincronização dos criativos` +
-            ` (${creativeSync.attempted} tentados, 0 salvos${csCodes ? `; Meta ${csCodes}` : ""}).` +
-            ` Rode Sincronizar Meta novamente.`,
+          text: "Os dados de performance foram atualizados, mas os criativos não. Clique em Sincronizar Meta novamente.",
         }
       : creativeSync.status === "degraded"
         ? {
             tone: "warning",
-            text:
-              `Dados de performance sincronizados. Criativos sincronizados parcialmente` +
-              ` (${creativeSync.upserted}/${creativeSync.attempted} salvos` +
-              `${creativeSync.minimalOnly > 0 ? `; ${creativeSync.minimalOnly} só com campos mínimos` : ""}` +
-              `${creativeSync.failed > 0 ? `; ${creativeSync.failed} falharam` : ""}` +
-              `${csCodes ? `; Meta ${csCodes}` : ""}).`,
+            text: "Os criativos foram atualizados parcialmente. Alguns podem estar sem imagem, texto ou detalhes até a próxima sincronização.",
           }
         : creativeSync.status === "unknown" && creativeSync.runStatus
           ? {
               tone: "warning",
-              text: "A última sincronização é anterior a esta versão — rode Sincronizar Meta para popular os criativos.",
+              text: "A última sincronização não trouxe os criativos. Clique em Sincronizar Meta para atualizá-los.",
             }
           : null;
 
@@ -98,7 +79,7 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
           {client.name}
         </Link>
         <div className="mt-2 flex flex-wrap items-center gap-2">
-          <h1 className="text-xl font-semibold text-foreground">Validar criativos</h1>
+          <h1 className="text-xl font-semibold text-foreground">Criativos</h1>
           <MetaConnectionBadge state={connection.state} />
         </div>
       </div>
@@ -119,12 +100,10 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
       <div className="flex items-start gap-2 rounded-lg border border-border bg-surface px-4 py-3 text-sm text-muted">
         <Info className="mt-0.5 size-4 shrink-0 text-accent" />
         <p>
-          Área de <span className="text-foreground">administração</span>. A
-          performance do criativo vem dos insights nível <span className="text-foreground">anúncio</span>,
-          somada apenas nos dias em que a relação anúncio↔criativo é{" "}
-          <span className="text-foreground">observacionalmente segura</span> (a Meta
-          não fornece a cronologia de troca de criativo). A atribuição melhora a
-          cada sincronização. Nada aqui altera o dashboard.
+          A performance de cada criativo é somada só nos dias em que dá para ter
+          certeza de qual criativo o anúncio estava usando. Como a Meta não
+          informa quando um criativo foi trocado, a atribuição fica mais
+          completa a cada sincronização.
         </p>
       </div>
 
@@ -159,7 +138,7 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
         <Field
           label={`Período · ${periodLabel(overview.preset)}`}
           value={period.start && period.end ? `${period.start} → ${period.end}` : "—"}
-          sub={overview.periodSynced ? undefined : "sem insights nível anúncio no intervalo"}
+          sub={overview.periodSynced ? undefined : "sem dados de anúncios neste intervalo"}
         />
         <Field label="Resultado principal" value={resultMetric.label} />
         <Field
@@ -204,12 +183,11 @@ export default async function CreativesPage({ params, searchParams }: PageProps)
           </section>
 
           <section className="flex flex-col gap-3">
-            <h2 className="text-base font-semibold text-foreground">Criativos (dados reais)</h2>
+            <h2 className="text-base font-semibold text-foreground">Criativos</h2>
             <p className="text-xs text-muted">
-              Ordenação por critérios objetivos. `Resultados` = métrica configurada
-              como resultado principal do cliente ({resultMetric.label}), resolvida
-              em leitura. Alcance/frequência não são agregados por criativo. Compare
-              manualmente com o Ads Manager antes de liberar no dashboard.
+              &quot;Resultados&quot; usa o resultado principal do cliente
+              ({resultMetric.label}). Alcance e frequência não são somados por
+              criativo.
             </p>
             <CreativesTable
               rows={rows}

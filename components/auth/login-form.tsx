@@ -45,7 +45,7 @@ export function LoginForm({ mode, redirectTo = "/" }: LoginFormProps) {
       }
       goToApp();
     } catch {
-      setError("Não foi possível conectar ao Supabase. Tente novamente.");
+      setError("Não foi possível conectar agora. Tente novamente.");
     } finally {
       setSubmitting(false);
     }
