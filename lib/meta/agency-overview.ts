@@ -112,8 +112,35 @@ export interface ClientAggregateInput {
   clientId: string;
   name: string;
   resultType: ResultMetricType;
+  /**
+   * `dashboard_configs.result_metric.resultLabel` do cliente — usado só para
+   * tipos SEM canônica (`custom`/`results`): se for um rótulo próprio (não o
+   * default "Resultados"), aparece como o "Resultado principal"; senão o
+   * cliente conta como "Não configurado".
+   */
+  configuredResultLabel?: string | null;
   /** já combinado entre as contas elegíveis do cliente (combineAccountPeriods). */
   period: AccountPeriodInput;
+}
+
+/** Rótulo genérico do preset `results`/`custom` — significa "sem rótulo próprio". */
+const GENERIC_RESULT_LABEL = "Resultados";
+export const UNCONFIGURED_RESULT_LABEL = "Não configurado";
+
+/**
+ * "Resultado principal" a exibir para 1 cliente na Agency Overview:
+ *  - tipo com canônica -> rótulo amigável do tipo ("Leads", "Compras", …)
+ *  - tipo sem canônica + rótulo próprio no config -> esse rótulo
+ *  - tipo sem canônica + rótulo genérico/ausente -> "Não configurado"
+ */
+export function agencyResultLabel(
+  resultType: ResultMetricType,
+  canonicalResultId: string | null,
+  configuredResultLabel: string | null | undefined,
+): string {
+  if (canonicalResultId !== null) return resultMetricTypeLabel(resultType);
+  const custom = (configuredResultLabel ?? "").trim();
+  return custom && custom !== GENERIC_RESULT_LABEL ? custom : UNCONFIGURED_RESULT_LABEL;
 }
 
 export interface ClientAggregate {
@@ -152,7 +179,7 @@ export function buildClientAggregate(input: ClientAggregateInput): ClientAggrega
     clientId: input.clientId,
     name: input.name,
     resultType,
-    resultLabel: resultMetricTypeLabel(resultType),
+    resultLabel: agencyResultLabel(resultType, canonicalResultId, input.configuredResultLabel),
     canonicalResultId,
     hasData,
     spend: period.spend,

@@ -21,15 +21,12 @@
  */
 
 import {
-  META_ATTRIBUTION_LEGACY_WINDOW,
-  META_DEFAULT_ATTRIBUTION_WINDOW,
-} from "@/lib/meta/config";
+  ATTRIBUTION_PRIORITY,
+  pickByAttributionPriority,
+} from "@/lib/meta/insights-attribution";
 
-/** Ordem de prioridade de `attribution_window` ao escolher a linha periódica. */
-export const PERIODIC_ATTRIBUTION_PRIORITY: readonly string[] = [
-  META_DEFAULT_ATTRIBUTION_WINDOW, // "unified_attribution"
-  META_ATTRIBUTION_LEGACY_WINDOW, // "7d_click_1d_view" — só fallback de compatibilidade
-];
+/** Ordem de prioridade de `attribution_window` (reexport — fonte única). */
+export const PERIODIC_ATTRIBUTION_PRIORITY = ATTRIBUTION_PRIORITY;
 
 export interface PeriodicRowLike {
   entity_id?: unknown;
@@ -56,13 +53,7 @@ export function selectAuthoritativePeriodicRow<T extends PeriodicRowLike>(
   const exact = rows.filter(
     (r) => r.date_from === opts.from && r.date_to === opts.to,
   );
-  if (exact.length === 0) return null;
-  for (const window of PERIODIC_ATTRIBUTION_PRIORITY) {
-    const hit = exact.find((r) => r.attribution_window === window);
-    if (hit) return hit;
-  }
-  // janela desconhecida (não deveria ocorrer) — determinístico: a 1ª.
-  return exact[0] ?? null;
+  return pickByAttributionPriority(exact);
 }
 
 /** Versão multi-entidade: a linha autoritativa de CADA `entity_id`. */

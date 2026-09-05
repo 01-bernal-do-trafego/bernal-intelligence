@@ -8,6 +8,7 @@
 import { describe, expect, it } from "vitest";
 import {
   aggregateDailySpend,
+  agencyResultLabel,
   buildClientAggregate,
   combineAccountPeriods,
   computeAgencyTotals,
@@ -17,6 +18,7 @@ import {
   hasMixedAgencyTimezones,
   summarizeHealth,
   topClientsBySpend,
+  UNCONFIGURED_RESULT_LABEL,
   type AccountPeriodInput,
   type ClientAggregate,
 } from "@/lib/meta/agency-overview";
@@ -529,5 +531,59 @@ describe("AccountPeriodInput — Agency Overview NÃO reconstrói reach/frequenc
     );
     expect("reach" in out).toBe(false);
     expect("frequency" in out).toBe(false);
+  });
+});
+
+describe("agencyResultLabel — Resultado principal por cliente", () => {
+  it("tipo com canônica -> rótulo amigável do tipo", () => {
+    expect(agencyResultLabel("leads", "leads", null)).toBe("Leads");
+    expect(agencyResultLabel("purchases", "purchases", "qualquer")).toBe("Compras");
+    expect(
+      agencyResultLabel("messaging_conversations_started", "messaging_conversations_started", null),
+    ).toBe("Conversas iniciadas");
+  });
+  it("tipo custom com rótulo PRÓPRIO -> usa o rótulo do config", () => {
+    expect(agencyResultLabel("custom", null, "Vendas no balcão")).toBe("Vendas no balcão");
+  });
+  it("tipo custom/results com rótulo genérico 'Resultados' ou vazio -> 'Não configurado'", () => {
+    expect(agencyResultLabel("custom", null, "Resultados")).toBe(UNCONFIGURED_RESULT_LABEL);
+    expect(agencyResultLabel("results", null, "")).toBe(UNCONFIGURED_RESULT_LABEL);
+    expect(agencyResultLabel("custom", null, null)).toBe(UNCONFIGURED_RESULT_LABEL);
+    expect(agencyResultLabel("custom", null, undefined)).toBe(UNCONFIGURED_RESULT_LABEL);
+    expect(UNCONFIGURED_RESULT_LABEL).toBe("Não configurado");
+  });
+  it("buildClientAggregate propaga o rótulo (Up Assessoria = custom + 'Resultados' -> Não configurado)", () => {
+    const agg = buildClientAggregate({
+      clientId: "up",
+      name: "Up Assessoria",
+      resultType: "custom",
+      configuredResultLabel: "Resultados",
+      period: emptyAccountPeriod(),
+    });
+    expect(agg.resultLabel).toBe("Não configurado");
+    expect(agg.results).toBeNull();
+  });
+});
+
+describe("aggregateDailySpend — missing day != zero real", () => {
+  it("dia SEM linha não vira R$0 na série (só entram datas presentes)", () => {
+    const out = aggregateDailySpend([
+      { date: "2026-09-01", spend: 100 },
+      { date: "2026-09-03", spend: 40 }, // 09-02 ausente de propósito
+    ]);
+    expect(out.map((p) => p.date)).toEqual(["2026-09-01", "2026-09-03"]);
+    expect(out.some((p) => p.date === "2026-09-02")).toBe(false);
+  });
+  it("spend real = 0 CONTINUA 0 na série (zero real preservado)", () => {
+    const out = aggregateDailySpend([
+      { date: "2026-09-03", spend: 17.92 },
+      { date: "2026-09-04", spend: 0 }, // dia real de gasto ~zero
+    ]);
+    const last = out.find((p) => p.date === "2026-09-04");
+    expect(last).toBeDefined();
+    expect(last?.value).toBe(0);
+  });
+  it("spend null (linha sem valor) NÃO entra como 0", () => {
+    expect(aggregateDailySpend([{ date: "2026-09-04", spend: null }])).toEqual([]);
   });
 });

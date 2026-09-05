@@ -41,7 +41,7 @@ describe("ResultGroups — sem cards vazios de métrica inexistente", () => {
 });
 
 describe("HealthSummary", () => {
-  it("renderiza as 5 contagens sem NaN/undefined", () => {
+  it("plural correto: 12 atualizados / 1 atrasado / 1 nunca sincronizado", () => {
     const html = renderToStaticMarkup(
       <HealthSummary
         health={{
@@ -55,19 +55,34 @@ describe("HealthSummary", () => {
       />,
     );
     expect(html).toContain("12 atualizados");
-    expect(html).toContain("1 atrasados");
-    expect(html).toContain("1 nunca sincronizados");
+    expect(html).toContain("1 atrasado");
+    expect(html).not.toContain("1 atrasados");
+    expect(html).toContain("1 nunca sincronizado");
+    expect(html).not.toContain("1 nunca sincronizados");
     expect(html).not.toContain("NaN");
     expect(html).not.toContain("undefined");
   });
 
-  it("zero em tudo ainda renderiza limpo (não quebra)", () => {
+  it("singular: 1 atualizado (não 'atualizados')", () => {
+    const html = renderToStaticMarkup(
+      <HealthSummary
+        health={{ fresh: 1, stale: 2, never: 0, lastSyncProblem: 0, metaNeedsAttention: 0, attentionCount: 2 }}
+      />,
+    );
+    expect(html).toContain("1 atualizado");
+    expect(html).not.toContain("1 atualizados");
+    expect(html).toContain("2 atrasados");
+  });
+
+  it("zero em tudo ainda renderiza limpo, chips 0 discretos (tom muted)", () => {
     const html = renderToStaticMarkup(
       <HealthSummary
         health={{ fresh: 0, stale: 0, never: 0, lastSyncProblem: 0, metaNeedsAttention: 0, attentionCount: 0 }}
       />,
     );
     expect(html).toContain("0 atualizados");
+    // chip de 'atrasado' com 0 não usa o tom de alerta (warning), fica muted
+    expect(html).not.toContain("text-warning");
     expect(html).not.toContain("NaN");
   });
 });

@@ -20,6 +20,7 @@ import {
   selectAuthoritativePeriodicByEntity,
   selectAuthoritativePeriodicRow,
 } from "@/lib/meta/periodic-select";
+import { dedupeByAttribution } from "@/lib/meta/insights-attribution";
 import {
   REACH_MULTI_ACCOUNT_NOTE,
   REACH_NOT_SYNCED_NOTE,
@@ -184,7 +185,7 @@ export async function getRealClientDashboard(
   let dailyQuery = supabase
     .from("meta_insights_daily")
     .select(
-      "date, entity_id, ad_account_id, spend, impressions, clicks, inline_link_clicks, reach, frequency, actions, action_values, raw_actions, raw_action_values",
+      "date, entity_id, ad_account_id, attribution_window, spend, impressions, clicks, inline_link_clicks, reach, frequency, actions, action_values, raw_actions, raw_action_values",
     )
     .eq("client_id", client.id)
     .eq("level", level)
@@ -195,7 +196,12 @@ export async function getRealClientDashboard(
   else if (scope === "account")
     dailyQuery = dailyQuery.eq("ad_account_id", accountId);
   const { data: dailyData } = await dailyQuery;
-  const dailyRows = (dailyData ?? []) as Record<string, unknown>[];
+  // de-dup por (entidade, dia): unified primeiro, legado só sem unified —
+  // nunca soma duas attribution windows da mesma entidade/data.
+  const dailyRows = dedupeByAttribution(
+    (dailyData ?? []) as Record<string, unknown>[],
+    (r) => `${String(r.entity_id)}|${String(r.date)}`,
+  );
 
   // datas já sincronizadas no escopo (para calcular cobertura por preset).
   const presentDates = new Set<string>(
@@ -547,7 +553,7 @@ export async function getRealClientDashboard(
       .in("attribution_window", ATTR_VALUES),
     supabase
       .from("meta_insights_daily")
-      .select("entity_id, spend, impressions, clicks, raw_actions, raw_action_values")
+      .select("entity_id, date, attribution_window, spend, impressions, clicks, raw_actions, raw_action_values")
       .eq("client_id", client.id)
       .eq("level", "campaign")
       .in("attribution_window", ATTR_VALUES)
@@ -570,7 +576,11 @@ export async function getRealClientDashboard(
     raw_action_values: Record<string, number>;
   }
   const dailyPerCamp = new Map<string, CampDaily>();
-  for (const r of (campDailyData ?? []) as Record<string, unknown>[]) {
+  const campDailyRows = dedupeByAttribution(
+    (campDailyData ?? []) as Record<string, unknown>[],
+    (r) => `${String(r.entity_id)}|${String(r.date)}`,
+  );
+  for (const r of campDailyRows) {
     const id = String(r.entity_id);
     const cur =
       dailyPerCamp.get(id) ??

@@ -21,6 +21,8 @@ interface DataTableProps<T> {
   emptyMessage?: string;
   skeletonRows?: number;
   className?: string;
+  /** padding horizontal reduzido — cabe mais coluna em desktop largo. */
+  dense?: boolean;
 }
 
 const ALIGN: Record<NonNullable<Column<unknown>["align"]>, string> = {
@@ -39,8 +41,11 @@ export function DataTable<T>({
   emptyMessage = "Nenhum registro encontrado.",
   skeletonRows = 5,
   className,
+  dense = false,
 }: DataTableProps<T>) {
   const colCount = columns.length;
+  const cellX = dense ? "px-2.5" : "px-4";
+  const cellY = dense ? "py-2.5" : "py-3";
 
   return (
     <div
@@ -56,7 +61,9 @@ export function DataTable<T>({
               <th
                 key={col.key}
                 className={cn(
-                  "whitespace-nowrap px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted",
+                  "whitespace-nowrap text-xs font-medium uppercase tracking-wide text-muted",
+                  cellX,
+                  cellY,
                   ALIGN[col.align ?? "left"],
                   col.headerClassName,
                 )}
@@ -71,7 +78,7 @@ export function DataTable<T>({
             Array.from({ length: skeletonRows }).map((_, rowIdx) => (
               <tr key={rowIdx} className="border-b border-border/60 last:border-0">
                 {columns.map((col) => (
-                  <td key={col.key} className="px-4 py-3">
+                  <td key={col.key} className={cn(cellX, cellY)}>
                     <Skeleton className="h-4 w-full max-w-[120px]" />
                   </td>
                 ))}
@@ -109,7 +116,9 @@ export function DataTable<T>({
                   <td
                     key={col.key}
                     className={cn(
-                      "whitespace-nowrap px-4 py-3 text-foreground",
+                      "whitespace-nowrap text-foreground",
+                      cellX,
+                      cellY,
                       ALIGN[col.align ?? "left"],
                       col.className,
                     )}

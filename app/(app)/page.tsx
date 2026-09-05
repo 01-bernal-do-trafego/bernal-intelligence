@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import type { Metadata } from "next";
 import { parsePeriod } from "@/lib/date-range";
 import { formatCurrencyOrDash, formatNumber, formatPercentOrDash } from "@/lib/format";
+import { plural } from "@/lib/plural";
 import { getAgencyOverview } from "@/server/agency-overview";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { MetricCard } from "@/components/ui/metric-card";
@@ -27,7 +28,7 @@ export default async function HomePage({ searchParams }: HomePageProps) {
   const overview = await getAgencyOverview(preset);
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-10">
+    <div className="mx-auto flex max-w-[1500px] flex-col gap-10">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h1 className="text-xl font-semibold text-foreground">Visão geral</h1>
@@ -40,7 +41,10 @@ export default async function HomePage({ searchParams }: HomePageProps) {
           />
         </div>
         <Suspense fallback={<div className="h-10" />}>
-          <DateRangePicker defaultPeriod={AGENCY_OVERVIEW_DEFAULT_PERIOD} />
+          <DateRangePicker
+            defaultPeriod={AGENCY_OVERVIEW_DEFAULT_PERIOD}
+            showCompare={false}
+          />
         </Suspense>
       </header>
 
@@ -65,19 +69,41 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               value={formatCurrencyOrDash(overview.totals.spend)}
               hint={
                 overview.coverage.withData < overview.coverage.total
-                  ? `${overview.coverage.withData} de ${overview.coverage.total} clientes com dados no período`
+                  ? `${overview.coverage.withData} de ${overview.coverage.total} ${plural(
+                      overview.coverage.total,
+                      "cliente",
+                    )} com dados no período`
                   : "Soma das contas Meta vinculadas, período selecionado"
               }
             />
             <MetricCard
               label="Contas Meta"
               value={formatNumber(overview.linkedAccountsCount)}
-              hint={`${overview.linkedAccountsCount} contas em ${overview.linkedAccountsClientCount} clientes`}
+              hint={`${overview.linkedAccountsCount} ${plural(
+                overview.linkedAccountsCount,
+                "conta",
+              )} em ${overview.linkedAccountsClientCount} ${plural(
+                overview.linkedAccountsClientCount,
+                "cliente",
+              )}`}
             />
             <MetricCard
               label="Saúde da operação"
-              value={`${formatNumber(overview.health.fresh)} atualizados`}
-              hint={`${overview.health.stale} atrasados · ${overview.health.never} nunca sincronizados`}
+              value={`${formatNumber(overview.health.fresh)} de ${formatNumber(
+                overview.activeClientsCount,
+              )} ${plural(overview.health.fresh, "atualizado")}`}
+              hint={
+                overview.health.attentionCount > 0
+                  ? `${overview.health.attentionCount} ${plural(
+                      overview.health.attentionCount,
+                      "cliente",
+                    )} ${plural(
+                      overview.health.attentionCount,
+                      "precisa",
+                      "precisam",
+                    )} de atenção`
+                  : "Toda a operação em dia"
+              }
             />
           </section>
 

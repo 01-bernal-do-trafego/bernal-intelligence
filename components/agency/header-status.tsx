@@ -1,4 +1,5 @@
 import { formatRelativeTime } from "@/lib/relative-time";
+import { plural } from "@/lib/plural";
 
 /**
  * Linha de status no topo da Visão Geral — baseada no health REAL
@@ -21,8 +22,8 @@ export function HeaderStatus({
         <>
           <span aria-hidden>·</span>
           <span className="text-warning">
-            {attentionCount} {attentionCount === 1 ? "cliente precisa" : "clientes precisam"} de
-            atenção
+            {attentionCount} {plural(attentionCount, "cliente")}{" "}
+            {plural(attentionCount, "precisa", "precisam")} de atenção
           </span>
         </>
       )}

@@ -4,6 +4,7 @@ import type { PeriodPreset } from "@/lib/date-range";
 import { metaPresetRange } from "@/lib/meta/date-preset";
 import { META_ATTRIBUTION_QUERY_VALUES } from "@/lib/meta/config";
 import { selectAuthoritativePeriodicByEntity } from "@/lib/meta/periodic-select";
+import { dedupeByAttribution } from "@/lib/meta/insights-attribution";
 import { parseDashboardConfig } from "@/lib/dashboard-config";
 import type { MetaUiState } from "@/lib/meta/connection-state";
 import {
@@ -243,12 +244,18 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
       else connectionsByClient.set(clientId, [info]);
     }
 
-    const resultTypeByClient = new Map<string, ResultMetricType>();
+    const resultConfigByClient = new Map<
+      string,
+      { type: ResultMetricType; label: string }
+    >();
     for (const row of (configsData ?? []) as Record<string, unknown>[]) {
       const clientId = str(row.client_id);
       if (!clientId) continue;
       const config = parseDashboardConfig({ result_metric: row.result_metric });
-      resultTypeByClient.set(clientId, config.resultMetric.type);
+      resultConfigByClient.set(clientId, {
+        type: config.resultMetric.type,
+        label: config.resultMetric.resultLabel,
+      });
     }
 
     interface HealthRow {
@@ -288,7 +295,9 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
               .in("attribution_window", ATTR_VALUES),
             supabase
               .from("meta_insights_daily")
-              .select("entity_id, date, spend, impressions, clicks, raw_actions, raw_action_values")
+              .select(
+                "entity_id, date, attribution_window, spend, impressions, clicks, raw_actions, raw_action_values",
+              )
               .eq("level", "account")
               .gte("date", range.start)
               .lte("date", range.end)
@@ -318,10 +327,16 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
       periodicByAccount.set(entityId, toAccountPeriod(row));
     }
 
-    // diário: agrupado por conta (fallback) E por data (gráfico agency-wide).
+    // diário: de-dup por (conta, dia) escolhendo 1 attribution_window
+    // determinística — NUNCA soma unified + legado da mesma conta/data.
+    const dailyRows = dedupeByAttribution(
+      (dailyData ?? []) as Record<string, unknown>[],
+      (r) => `${String(r.entity_id)}|${String(r.date)}`,
+    );
+    // agrupado por conta (fallback) E por data (gráfico agency-wide).
     const dailyByAccount = new Map<string, AccountPeriodInput[]>();
     const dailyForChart: { date: string; spend: number | null }[] = [];
-    for (const row of (dailyData ?? []) as Record<string, unknown>[]) {
+    for (const row of dailyRows) {
       const entityId = str(row.entity_id);
       const date = str(row.date);
       const period = toAccountPeriod(row);
@@ -347,11 +362,16 @@ export async function getAgencyOverview(preset: PeriodPreset): Promise<AgencyOve
     for (const client of activeClients) {
       const accIds = clientAccountIds.get(client.id) ?? [];
       const period = combineAccountPeriods(accIds.map((id) => accountPeriodTotals(id)));
-      const resultType = resultTypeByClient.get(client.id) ?? parseDashboardConfig(null).resultMetric.type;
+      const resultConfig =
+        resultConfigByClient.get(client.id) ?? {
+          type: parseDashboardConfig(null).resultMetric.type,
+          label: parseDashboardConfig(null).resultMetric.resultLabel,
+        };
       const aggregate = buildClientAggregate({
         clientId: client.id,
         name: client.name,
-        resultType,
+        resultType: resultConfig.type,
+        configuredResultLabel: resultConfig.label,
         period,
       });
       clientAggregates.push(aggregate);

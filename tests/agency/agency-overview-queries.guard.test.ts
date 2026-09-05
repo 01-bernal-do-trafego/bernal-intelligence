@@ -81,6 +81,36 @@ describe("nenhuma query de insights usa level diferente de 'account'", () => {
   });
 });
 
+describe("daily fallback também é de-dup por attribution_window", () => {
+  it("agency-overview.ts de-dup o diário por (conta, dia) antes de somar", () => {
+    expect(src).toMatch(/dedupeByAttribution\(\s*\(dailyData[\s\S]*?entity_id.*?\|.*?date/);
+    expect(src).toContain('from "@/lib/meta/insights-attribution"');
+  });
+  it("seleciona attribution_window da lista, sem somar as duas janelas", () => {
+    expect(src).not.toMatch(/for \(const row of \(dailyData/); // não itera o cru direto
+  });
+});
+
+describe("checkbox 'Comparar com período anterior' — não fica morto na V1", () => {
+  const page = readFileSync(
+    fileURLToPath(new URL("../../app/(app)/page.tsx", import.meta.url)),
+    "utf8",
+  );
+  const picker = readFileSync(
+    fileURLToPath(new URL("../../components/ui/date-range-picker.tsx", import.meta.url)),
+    "utf8",
+  );
+  it("a Agency Overview passa showCompare={false}", () => {
+    expect(page).toMatch(/showCompare=\{false\}/);
+  });
+  it("DateRangePicker esconde o checkbox quando showCompare é false", () => {
+    expect(picker).toMatch(/\{showCompare &&/);
+  });
+  it("a página NÃO lê 'compare' do searchParams (nada compararia)", () => {
+    expect(page).not.toMatch(/compare/);
+  });
+});
+
 describe("dashboard individual usa a MESMA seleção canônica compartilhada", () => {
   const realDash = readFileSync(
     fileURLToPath(new URL("../../server/real-dashboard.ts", import.meta.url)),

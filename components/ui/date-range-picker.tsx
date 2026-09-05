@@ -9,6 +9,8 @@ interface DateRangePickerProps {
   className?: string;
   /** Preset assumido quando a URL não tem `?period=` (default: DEFAULT_PERIOD global). */
   defaultPeriod?: PeriodPreset;
+  /** Mostrar o checkbox "Comparar com período anterior" (default: true). */
+  showCompare?: boolean;
 }
 
 /**
@@ -19,7 +21,11 @@ interface DateRangePickerProps {
  * O estado vive na URL (`?period=...&compare=1`), de modo que o servidor
  * recalcula os dados a cada mudança. Deve ser usado dentro de <Suspense>.
  */
-export function DateRangePicker({ className, defaultPeriod }: DateRangePickerProps) {
+export function DateRangePicker({
+  className,
+  defaultPeriod,
+  showCompare = true,
+}: DateRangePickerProps) {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -49,15 +55,17 @@ export function DateRangePicker({ className, defaultPeriod }: DateRangePickerPro
         options={PERIOD_PRESETS}
         onChange={(e) => update({ period: e.target.value })}
       />
-      <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-muted">
-        <input
-          type="checkbox"
-          checked={compare}
-          onChange={(e) => update({ compare: e.target.checked })}
-          className="size-4 rounded border-border accent-accent"
-        />
-        Comparar com período anterior
-      </label>
+      {showCompare && (
+        <label className="flex cursor-pointer select-none items-center gap-2 text-sm text-muted">
+          <input
+            type="checkbox"
+            checked={compare}
+            onChange={(e) => update({ compare: e.target.checked })}
+            className="size-4 rounded border-border accent-accent"
+          />
+          Comparar com período anterior
+        </label>
+      )}
     </div>
   );
 }

@@ -68,7 +68,12 @@ export function AgencyClientsTable({
     {
       key: "client",
       header: "Cliente",
-      render: (row) => <span className="font-medium text-foreground">{row.name}</span>,
+      className: "max-w-[220px]",
+      render: (row) => (
+        <span className="block truncate font-medium text-foreground" title={row.name}>
+          {row.name}
+        </span>
+      ),
     },
     {
       key: "meta",
@@ -192,6 +197,7 @@ export function AgencyClientsTable({
         getRowId={(row) => row.clientId}
         onRowClick={(row) => router.push(`/clients/${row.clientId}`)}
         emptyMessage="Nenhum cliente neste filtro."
+        dense
       />
     </div>
   );
