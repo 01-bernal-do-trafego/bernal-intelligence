@@ -91,7 +91,10 @@ export default async function HomePage({ searchParams }: HomePageProps) {
               label="Saúde da operação"
               value={`${formatNumber(overview.health.fresh)} de ${formatNumber(
                 overview.activeClientsCount,
-              )} ${plural(overview.health.fresh, "atualizado")}`}
+              )} ${plural(overview.activeClientsCount, "cliente")} ${plural(
+                overview.activeClientsCount,
+                "atualizado",
+              )}`}
               hint={
                 overview.health.attentionCount > 0
                   ? `${overview.health.attentionCount} ${plural(
