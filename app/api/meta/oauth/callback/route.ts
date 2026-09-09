@@ -19,6 +19,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { isAgencyRole } from "@/lib/roles";
+import { appOrigin } from "@/lib/app-url";
 import { getSessionContext } from "@/supabase/auth";
 import { createSupabaseServerClient } from "@/supabase/server";
 import { SUPABASE_FUNCTIONS_URL } from "@/supabase/config";
@@ -46,7 +47,9 @@ function clearStateCookie(response: NextResponse): NextResponse {
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
-  const origin = request.nextUrl.origin;
+  // Origem pública autoritativa (NEXT_PUBLIC_APP_URL atrás de reverse proxy);
+  // nunca o bind interno do processo Next.
+  const origin = appOrigin(request);
   const sp = request.nextUrl.searchParams;
 
   const back = (path: string) =>

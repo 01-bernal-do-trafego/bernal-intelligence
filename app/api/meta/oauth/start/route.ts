@@ -15,6 +15,7 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { isAgencyRole } from "@/lib/roles";
+import { appOrigin } from "@/lib/app-url";
 import { getSessionContext } from "@/supabase/auth";
 import { getClientRecord } from "@/server/clients";
 import { buildAuthorizationUrl } from "@/lib/meta/oauth-url";
@@ -36,7 +37,7 @@ function base64url(bytes: Uint8Array): string {
 }
 
 function redirectTo(request: NextRequest, path: string): NextResponse {
-  return NextResponse.redirect(new URL(path, request.nextUrl.origin));
+  return NextResponse.redirect(new URL(path, appOrigin(request)));
 }
 
 export async function GET(request: NextRequest): Promise<NextResponse> {
@@ -44,7 +45,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
 
   const { user, profile } = await getSessionContext();
   if (!user || !profile || !isAgencyRole(profile.role)) {
-    const back = new URL("/login", request.nextUrl.origin);
+    const back = new URL("/login", appOrigin(request));
     back.searchParams.set("redirectTo", `/clients/${clientIdParam}`);
     return NextResponse.redirect(back);
   }

@@ -11,6 +11,16 @@ internos são relativos (`/`, `/clients/...`), a base do app deriva de
 `www.facebook.com`) são fixas por design (overridáveis por env). Os únicos
 `localhost` são exemplos de comentário em `.env.example`.
 
+Redirects absolutos (callback do OAuth, redirects de sessão do middleware) usam
+a **origem pública autoritativa** `NEXT_PUBLIC_APP_URL`. Atrás de reverse proxy
+(Hostinger) essa variável é **obrigatória**: sem ela o `next start` deriva a
+origem do bind interno do processo (`https://0.0.0.0:3000` → o browser recebe
+`Location: https://0.0.0.0:3000/...` e falha com `ERR_SSL_PROTOCOL_ERROR`).
+
+- [ ] **`NEXT_PUBLIC_APP_URL`** = `https://<dominio>` (sem barra final) no host de
+  deploy. Rebuild obrigatório após definir/alterar (`NEXT_PUBLIC_*` é embutida em
+  build-time).
+
 - [ ] **Meta OAuth redirect** — cadastrar `https://<dominio>/api/meta/oauth/callback`
   em "Valid OAuth Redirect URIs" no app da Meta.
 - [ ] **`META_OAUTH_REDIRECT_URI`** (server + Edge Secret) — apontar para a URL
@@ -23,8 +33,8 @@ internos são relativos (`/`, `/clients/...`), a base do app deriva de
 
 ## Env de produção
 
-- [ ] Definir `NEXT_PUBLIC_SUPABASE_URL` e `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
-  no host de deploy.
+- [ ] Definir `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+  e `NEXT_PUBLIC_APP_URL` no host de deploy.
 - [ ] Definir `META_APP_ID`, `META_OAUTH_CONFIG_ID`, `META_OAUTH_REDIRECT_URI`
   (server).
 - [ ] Edge Secrets já no projeto Supabase: `META_APP_SECRET`,

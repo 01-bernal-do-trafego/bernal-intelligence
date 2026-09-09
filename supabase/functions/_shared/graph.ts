@@ -25,6 +25,76 @@ export interface ExchangedToken {
   expiresIn: number | null;
 }
 
+/**
+ * Diagnóstico SANITIZADO da falha da troca. NUNCA carrega code/token/secret —
+ * só status HTTP, `error.type` / `error.code` / `error.error_subcode` e a
+ * `error.message` já redigida/truncada. Cópia mínima de
+ * `lib/meta/oauth-exchange-error.ts` (fronteira Deno).
+ */
+export interface SanitizedExchangeError {
+  meta_http_status: number;
+  meta_error_type: string | null;
+  meta_error_code: number | null;
+  meta_error_subcode: number | null;
+  meta_message: string | null;
+  non_json: boolean;
+}
+
+const TOKENISH = /[A-Za-z0-9_-]{20,}/g;
+
+function sanitizeMetaMessage(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(TOKENISH, "[redacted]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 200);
+}
+
+function buildSanitizedExchangeError(
+  httpStatus: number,
+  body: unknown,
+): SanitizedExchangeError {
+  if (body == null || typeof body !== "object") {
+    return {
+      meta_http_status: httpStatus,
+      meta_error_type: null,
+      meta_error_code: null,
+      meta_error_subcode: null,
+      meta_message: null,
+      non_json: true,
+    };
+  }
+  const err = (body as Record<string, unknown>).error;
+  const e =
+    err && typeof err === "object" ? (err as Record<string, unknown>) : null;
+  const message = e ? sanitizeMetaMessage(e.message) : "";
+  return {
+    meta_http_status: httpStatus,
+    meta_error_type: e && typeof e.type === "string" ? e.type : null,
+    meta_error_code: e && typeof e.code === "number" ? e.code : null,
+    meta_error_subcode:
+      e && typeof e.error_subcode === "number" ? e.error_subcode : null,
+    meta_message: message.length > 0 ? message : null,
+    non_json: false,
+  };
+}
+
+/**
+ * Falha da troca do `code`. Carrega SOMENTE o diagnóstico sanitizado — a
+ * mensagem do `Error` é um rótulo curto sem detalhe sensível.
+ */
+export class MetaExchangeError extends Error {
+  readonly sanitized: SanitizedExchangeError;
+  constructor(sanitized: SanitizedExchangeError) {
+    super(
+      `meta_exchange_failed:${sanitized.meta_error_code ?? sanitized.meta_http_status}`,
+    );
+    this.name = "MetaExchangeError";
+    this.sanitized = sanitized;
+  }
+}
+
 /** Troca o `code` do callback por um access token. */
 export async function exchangeCodeForToken(
   input: ExchangeCodeInput,
@@ -38,16 +108,16 @@ export async function exchangeCodeForToken(
   url.searchParams.set("code", input.code);
 
   const res = await fetch(url, { method: "GET" });
-  const body = (await res.json().catch(() => null)) as
-    | Record<string, unknown>
-    | null;
+  const text = await res.text().catch(() => "");
+  let body: Record<string, unknown> | null = null;
+  try {
+    body = text ? (JSON.parse(text) as Record<string, unknown>) : null;
+  } catch {
+    body = null;
+  }
 
   if (!res.ok || !body || typeof body.access_token !== "string") {
-    const detail =
-      body && typeof body.error === "object" && body.error
-        ? JSON.stringify(body.error)
-        : `HTTP ${res.status}`;
-    throw new Error(`Falha na troca do code: ${detail}`);
+    throw new MetaExchangeError(buildSanitizedExchangeError(res.status, body));
   }
 
   return {

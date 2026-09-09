@@ -12,6 +12,7 @@ Três camadas conceituais:
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | URL do projeto Supabase (`https://<ref>.supabase.co`). Também deriva a base das Edge Functions. |
 | `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` | Publishable/anon key do Supabase — segura para o browser. **Nunca** a `service_role`/secret key aqui. |
+| `NEXT_PUBLIC_APP_URL` | Origem pública do app (`https://<dominio>`, sem barra final). Fonte autoritativa para redirects absolutos (callback do OAuth da Meta, redirects de sessão do middleware). **Obrigatória atrás de reverse proxy** (Hostinger): sem ela o `next start` monta os redirects a partir do bind interno do processo (`https://0.0.0.0:3000` → `ERR_SSL_PROTOCOL_ERROR`). Em dev fica em branco (usa a origem do request). Não é segredo. Não deriva de `x-forwarded-host`. |
 
 Sem essas duas, o app entra em `unconfigured` (produção) → todo acesso é
 barrado e redirecionado para `/login`. Nunca há bypass de autenticação em

@@ -29,15 +29,22 @@
  *   META_APP_ID, META_APP_SECRET, META_OAUTH_REDIRECT_URI, META_TOKEN_ENC_KEY
  *   (META_GRAPH_VERSION / META_GRAPH_BASE opcionais)
  *
- * NÃO há logging nesta função: authorization code, access token e App Secret
- * nunca são impressos nem devolvidos na resposta.
+ * LOGGING: só uma linha SANITIZADA no caminho de `exchange_failed` — status
+ * HTTP da Meta, error.type/code/error_subcode e a mensagem já redigida/truncada
+ * (ver _shared/graph.ts → SanitizedExchangeError). NUNCA authorization code,
+ * access token, App Secret, chave de cifra, JWT, header Authorization nem corpo
+ * cru. Nada disso vai para a resposta.
  */
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, requireEnv } from "../_shared/http.ts";
 import { resolvePublishableKey, resolveSecretKey } from "../_shared/supabase.ts";
 import { sealToken } from "../_shared/crypto.ts";
-import { debugToken, exchangeCodeForToken } from "../_shared/graph.ts";
+import {
+  debugToken,
+  exchangeCodeForToken,
+  MetaExchangeError,
+} from "../_shared/graph.ts";
 
 const GRAPH_BASE =
   Deno.env.get("META_GRAPH_BASE") ?? "https://graph.facebook.com";
@@ -121,7 +128,7 @@ Deno.serve(async (req: Request) => {
     return json({ error: "misconfigured", detail: String(err) }, 500);
   }
 
-  // 3. Troca do code (sem detalhe do erro na resposta)
+  // 3. Troca do code (sem detalhe do erro na resposta; log só sanitizado)
   let token;
   try {
     token = await exchangeCodeForToken({
@@ -132,7 +139,20 @@ Deno.serve(async (req: Request) => {
       redirectUri: REDIRECT_URI,
       code,
     });
-  } catch {
+  } catch (err) {
+    if (err instanceof MetaExchangeError) {
+      console.error(
+        JSON.stringify({ evt: "meta_oauth_exchange_failed", clientId, ...err.sanitized }),
+      );
+    } else {
+      console.error(
+        JSON.stringify({
+          evt: "meta_oauth_exchange_failed",
+          clientId,
+          category: "unexpected",
+        }),
+      );
+    }
     return json({ error: "exchange_failed" }, 502);
   }
 

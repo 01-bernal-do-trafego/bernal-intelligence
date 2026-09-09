@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { appOrigin } from "@/lib/app-url";
 import {
   SUPABASE_PUBLISHABLE_KEY,
   SUPABASE_URL,
@@ -12,6 +13,15 @@ function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some(
     (path) => pathname === path || pathname.startsWith(`${path}/`),
   );
+}
+
+/**
+ * URL absoluta para um redirect de sessão. A origem vem de `NEXT_PUBLIC_APP_URL`
+ * quando configurada (deploy atrás de reverse proxy); senão, da origem do
+ * request (desenvolvimento). Nunca de `x-forwarded-host`.
+ */
+function redirectUrl(request: NextRequest, pathname: string): URL {
+  return new URL(pathname, appOrigin(request));
 }
 
 /**
@@ -30,9 +40,7 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   // Sem configuração em produção: nenhuma rota autenticada é acessível.
   if (mode === "unconfigured") {
     if (isPublic(pathname)) return NextResponse.next({ request });
-    const url = request.nextUrl.clone();
-    url.pathname = "/login";
-    return NextResponse.redirect(url);
+    return NextResponse.redirect(redirectUrl(request, "/login"));
   }
 
   // Modo Supabase: valida a sessão real.
@@ -60,17 +68,13 @@ export async function updateSession(request: NextRequest): Promise<NextResponse>
   } = await supabase.auth.getUser();
 
   if (!user && !isPublic(pathname)) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/login";
+    const url = redirectUrl(request, "/login");
     url.searchParams.set("redirectTo", pathname);
     return NextResponse.redirect(url);
   }
 
   if (user && pathname === "/login") {
-    const url = request.nextUrl.clone();
-    url.pathname = "/";
-    url.search = "";
-    return NextResponse.redirect(url);
+    return NextResponse.redirect(redirectUrl(request, "/"));
   }
 
   return response;
