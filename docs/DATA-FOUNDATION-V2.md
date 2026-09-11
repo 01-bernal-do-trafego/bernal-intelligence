@@ -194,9 +194,137 @@ Regras explícitas:
 será ligada quando houver **paridade 1:1 comprovada** com os avisos/números
 atuais. Preferimos não integrar a arriscar mudar a tela agora.
 
+## DATA V2.1 — Query Layer
+
+Camada genérica de consulta e cálculo, em `lib/query/`. **Em paralelo** ao
+runtime V1 (`server/real-dashboard.ts`, `server/agency-overview.ts`) — nenhum
+consumidor a chama ainda, nenhuma tela muda, nenhum dos dois arquivos foi
+tocado nesta fase.
+
+### Responsabilidades
+
+Nenhum consumidor futuro (builder, funil, ranking, Intelligence) precisa saber
+qual coluna SQL representa a métrica, se é `action_type`, se é fórmula, se é
+aditiva, se precisa do periódico exato, ou como a janela de atribuição é
+escolhida — a Query Layer + o Metric Registry V2 decidem isso.
+
+### API pública
+
+| Função | Arquivo | Faz |
+|---|---|---|
+| `resolveMetricTotals(input)` | `lib/query/metric-totals.ts` | total de N métricas para um escopo + intervalo |
+| `resolveMetricSeries(input)` | `lib/query/metric-series.ts` | série diária de N métricas para um escopo + intervalo |
+| `compareMetricValues(current, previous)` / `resolveMetricComparison(current[], previous[])` | `lib/query/metric-comparison.ts` | delta absoluto/percentual, null-safe |
+
+Entrada comum: `scope { clientId, level, entityIds }` + `range { from, to }`
+(**não** presets — resolver um preset num `DateRange` é responsabilidade de
+quem chama, hoje `lib/meta/date-preset.ts`) + `metricIds` + `resultMetric?`
+(contexto de `dashboard_configs.result_metric`) + as linhas **já buscadas**
+(`dailyRows`/`periodicRows`, normalizadas nos mesmos nomes de coluna do banco).
+
+**Separação DB / cálculo**: as três funções são **puras e síncronas** — não
+fazem I/O. `lib/query/types.ts` documenta `InsightsReader`, a porta que um
+adapter real (Supabase, DATA V2.2/V2.3) implementaria; **não implementada**
+nesta fase — sem consumidor real, uma implementação seria código não testado
+de verdade. O adapter real deve sempre filtrar `client_id` + `level` +
+intervalo (+ entidade) NA QUERY, nunca `select *` sem range;
+`lib/query/rows.ts` refiltra defensivamente por segurança, mas isso não
+substitui um `WHERE` eficiente.
+
+### Fonte dos totais e matemática
+
+Paridade de comportamento com `real-dashboard.ts`: quando o escopo é **1
+entidade** e existe uma linha `meta_insights_periodic` no intervalo **EXATO**,
+os totais (aditivas E conversões) vêm **inteiramente** dela — não sofre buraco
+de cobertura diária e bate com o Ads Manager. Senão, vêm da **soma das linhas
+diárias** do escopo.
+
+- **`direct_sum`** (aditivas): soma da fonte acima.
+- **`recompute_from_components`** (ratios — CTR, CPC, CPM, CPA, CPL, ROAS,
+  `cost_per_result`…): a fórmula é **reaplicada** sobre os componentes já
+  somados/periódicos. Nunca `sum(ctr)`, nunca `avg(cpa)`.
+- **`exact_periodic_only`** (`reach`, `frequency`, `video_avg_time_watched`):
+  só do periodic exato, e só com escopo de **1 entidade** — multi-entidade
+  nunca soma nem aproxima (`reach` de "3 contas" não existe sem a Meta
+  agregar).
+- Em `resolveMetricSeries`, o valor de cada DIA é recalculado sobre os
+  componentes DAQUELE dia (ratio) ou lido nativamente da linha do dia
+  (`reach`/`frequency`, só quando o escopo é 1 entidade). `reach` diário **pode
+  aparecer como ponto da série** — o que é proibido é usá-lo para reconstruir
+  um total multi-dia por soma; a série não expõe nenhum total, só pontos.
+
+Reaproveita, sem duplicar: `conversionTotalsFromRow`, `sumRawMaps`,
+`withResolvedResults`, `computeMetric`, `dedupeByAttribution`,
+`selectAuthoritativePeriodicRow`, `percentChange`. Nenhuma lógica nova de
+prioridade de atribuição ou de resolução de conversão foi criada.
+
+### Zero vs no_data
+
+Ausência de linha → `null` em todo `MetricValueResult`/`SeriesPoint`, nunca
+`0`. Linha real com valor `0` → `0`. A soma de nenhuma linha (`sumOrNull` em
+`lib/query/rows.ts`) devolve `null`, não `0` — mesma regra em totais e em série.
+
+### Attribution
+
+Reaproveitado sem alteração: `dedupeByAttribution` (linhas diárias, chave
+`entity_id|date`) e `selectAuthoritativePeriodicRow` (linha periódica, intervalo
+exato + prioridade `unified_attribution` > legado). Nenhuma lógica nova de
+prioridade — a Query Layer não sabe o que é `unified_attribution`, só delega.
+
+### DataQuality
+
+Cada `MetricValueResult`/`MetricSeriesResult` carrega um `DataQuality` (V2.0).
+Só os 4 estados já produzidos (`ok | partial | stale | no_data`) — nenhum
+estado novo foi inventado. Indisponibilidades ESTRUTURAIS da Query Layer
+(métrica desconhecida, nível incompatível, escopo multi-entidade não
+consolidável, sem periodic exato) usam `state: "no_data"` com um motivo
+honesto em `reasons` (`unknown_metric`, `level_not_supported`,
+`not_consolidable_multi_entity`, `no_exact_periodic_match`,
+`no_aggregation_semantics`) — `lib/query/quality.ts` só ACRESCENTA motivos,
+nunca altera `lib/data-quality.ts` (V2.0, checkpointado).
+
+### Falha segura vs falha dura
+
+- **Segura** (não lança, não contamina os outros itens do pedido): metricId
+  desconhecido, nível incompatível para a métrica, escopo não consolidável,
+  sem periodic exato → aquele item volta `value: null` + motivo.
+- **Dura** (lança `Error` — bug de quem chama, não estado de dado):
+  `range.from > range.to`.
+
+### Paridade V1
+
+`tests/query/parity-v1.test.ts` prova, por CÓDIGO (não só coincidência
+numérica): o mesmo fixture, resolvido pela Query Layer e pelos primitivos do
+V1 chamados diretamente (`conversionTotalsFromRow` + `computeMetric` +
+`withResolvedResults`), produz o **mesmo número** — para spend, impressions,
+reach (via periodic exato), clicks, CTR, CPC, CPM, leads,
+`messaging_conversations_started`, `results`/`cost_per_result` (config-driven)
+e revenue/ROAS. Inclui o caso em que a soma diária diverge do periodic
+(defasagem simulada) para provar que a Query Layer prefere o periodic exato,
+exatamente como `real-dashboard.ts`.
+
+### Limitações desta fase (o que fica para blocos seguintes)
+
+- **Sem custom date ranges de verdade** — a Query Layer aceita qualquer
+  `{from,to}`, mas não popula/consulta `meta_insights_periodic` sob demanda
+  para um intervalo sem periodic sincronizado (`period_key='custom'`
+  on-demand é DATA V2.3).
+- **Sem histórico longo nem backfill** — resolve só sobre as linhas que
+  recebe; não muda `dailyHorizon` nem o horizonte de sync (DATA V2.2).
+- **Sem breakdowns** (DATA V2.6), **sem Instagram** (V2.10), **sem
+  saldo/billing/alertas** (V2.7/V2.9).
+- **`creative_analysis` fora do escopo** — Creative Ranking continua em
+  `lib/meta/creative-attribution.ts`/`creative-performance.ts` (DATA V2.8
+  decide se/como conecta à Query Layer).
+- **Adapter real (Supabase) não implementado** — só a porta `InsightsReader`
+  documentada; a implementação real chega com o primeiro consumidor (V2.2/V2.3).
+- **Sem widget/data contract de gráfico** (`kpi`/`pizza`/`funil`/`tabela`) —
+  isso é DATA V2.5, que consome `resolveMetricTotals`/`Series` por baixo.
+- **Sem UI, sem substituição do dashboard V1.**
+
 ## Próximos blocos (ordem por dependência técnica)
 
-`V2.1` Query Layer (paralelo, opt-in) · `V2.2` Historical Backfill · `V2.3`
+`V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2` Historical Backfill · `V2.3`
 Custom ranges & reach on-demand · `V2.4` Metric catalog expansion · `V2.5`
 Dashboard Builder data contract + gráficos novos (backend) · `V2.6` Breakdowns ·
 `V2.7` Account Financial + Alerts · `V2.8` Creative Ranking · `V2.9` Client Goals
@@ -217,5 +345,10 @@ Scale hardening (condicional).
 - **Breakdowns / saldo / alertas** — só o campo/`type` preparado, sem produtor.
 - **Intelligence** — não implementada; só a base de metadados (`significanceMetric`,
   `relatedMetrics`) e o contrato `DataQuality`.
+- **Query Layer (DATA V2.1)** — construída, mas **não substitui** `real-dashboard.ts`
+  nem `agency-overview.ts`, **não** implementa custom date ranges de verdade
+  (`period_key='custom'` on-demand), **não** tem adapter real (Supabase) —
+  só a porta `InsightsReader` documentada — e **não** define nenhum data
+  contract de widget/gráfico.
 - **Nenhuma migration.** Nenhum Supabase, Edge Function, Cron, Vault, secret,
   Meta API ou deploy tocado. Nenhuma mudança visual. Nenhuma mudança numérica.
