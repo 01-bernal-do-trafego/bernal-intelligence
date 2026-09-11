@@ -857,29 +857,114 @@ Supabase nesta sessão. `supabase/config.toml` continua não existindo —
 `verify_jwt=false` é uma flag de `supabase functions deploy --no-verify-jwt`,
 documentada no cabeçalho do arquivo (mesmo padrão de `meta-sync-scheduled`).
 
-### Primeiro piloto (plano — não executado)
+### Primeiro piloto — V2.2.3B ✅ CONCLUÍDO (Supabase Dev)
+
+Plano original (abaixo, histórico) executado com sucesso no Supabase Dev,
+fora desta sessão de implementação (piloto real, com Meta de verdade,
+conexão Dev reautorizada via OAuth):
 
 1. Supabase Dev, 1 conta linkada com conexão REAUTORIZADA (as conexões
-   Dev estão hoje `reauthorization_required` — reautorizar via OAuth real
-   é pré-requisito, fora desta sessão).
-2. `level=account`, intervalo de 2–3 dias, 1 job → 1 segmento (via
+   Dev estavam `reauthorization_required` — reautorizadas via OAuth real
+   antes do piloto).
+2. `level=account`, intervalo pequeno, 1 job → 1 segmento (via
    `claim_next_backfill_segment(p_job_id)`).
-3. Invocação manual da Edge Function (sem Cron) — 1 POST, observar a
-   resposta (`status`, `pages_fetched`, `rows_written`) e conferir
-   `meta_insights_daily` manualmente.
-4. Confirmar idempotência: reinvocar o mesmo job (novo claim do MESMO
-   segmento, se ainda `pending`, ou um segmento equivalente) e confirmar
-   que o estado final não duplica.
-5. Só depois: `level=campaign` pequeno.
-6. Só depois disso: `adset`/`ad` (Atacado do Chinelo, 95 ads, é o
-   candidato natural de teste de carga — DATA V2.2A/V2.2.2).
+3. Invocação manual da Edge Function (sem Cron) — resposta conferida,
+   `meta_insights_daily` conferida manualmente.
+4. Idempotência confirmada: reinvocação não duplicou dados.
+
+**Validado no piloto real:** chamada Meta de verdade, zero-data
+(`skipped_no_data` quando aplicável), escrita em `meta_insights_daily`,
+idempotência (natural key), ausência de duplicação. Achado do piloto que
+motivou a DATA V2.2.4 (abaixo): o job ficava `running` para sempre depois
+que o(s) segmento(s) terminavam — exigia `UPDATE` manual do
+`meta_backfill_jobs.status` para `completed`.
+
+`level=campaign`/`adset`/`ad` (Atacado do Chinelo, 95 ads, candidato a
+teste de carga) continuam como próximos passos do piloto, fora desta
+sessão.
+
+## DATA V2.2.4 — Automatic Job Finalization
+
+Elimina o `UPDATE` manual do job encontrado no piloto V2.2.3B.
+
+### Schema auditado (nenhuma coluna nova)
+
+`meta_backfill_jobs.finished_at` já existe desde a V2.2.1
+(`20260910120000_meta_backfill_control_plane.sql`) e já é carimbado pela
+trigger `meta_backfill_jobs_check_transition` ao entrar em `completed` —
+nenhuma coluna nova foi criada. A transição `running -> completed` já era
+válida na máquina de estados do job (mesma migration) — nenhuma mudança
+de trigger/schema, só a RPC que decide QUANDO disparar essa transição.
+
+### Regra final
+
+Dentro da MESMA invocação de `complete_backfill_segment`, SE o `UPDATE`
+fenced do segmento teve sucesso (`running -> done | skipped_no_data`):
+
+```
+job.status = 'running'
+AND existe >= 1 segmento do job
+AND nenhum segmento do job está pending/running/failed
+-> job.status = 'completed'
+```
+
+Jobs `paused`/`failed`/`cancelled`/`completed`/`exhausted` nunca são
+tocados (só `j.status = 'running'` participa da condição). `exhausted`
+**nunca** é usado por esta regra — mesmo se todos os segmentos forem
+`skipped_no_data`, o resultado é `completed` (job explícito com intervalo
+definido). `exhausted` continua reservado ao fluxo futuro de discovery
+("todo o histórico disponível pela fonte").
+
+### Atomicidade
+
+Sem segunda RPC, sem segunda transação, sem chamada extra da Edge
+Function. A reconciliação do job acontece DENTRO do corpo de
+`complete_backfill_segment` (`RETURNING job_id INTO v_job_id` do UPDATE
+do segmento, seguido do UPDATE condicional do job), na MESMA invocação —
+1 chamada da RPC = 1 transação. **Assinatura pública inalterada** (mesmos
+5 parâmetros, mesmo retorno `boolean`) — a Edge Function não precisa
+mudar nenhuma linha.
+
+### Fencing preservado
+
+Se o `UPDATE` do segmento afetar 0 linhas (token errado, lease expirada,
+ou status ≠ `running`), a função devolve `false` **antes** de qualquer
+tentativa de tocar no job — `get diagnostics v_n = row_count; if v_n = 0
+then return false;` roda antes do `UPDATE` do job. Guardado por
+parse-guard (posição relativa no SQL).
+
+### Concorrência
+
+Hoje só existe 1 segmento `running` por `ad_account_ref` (V2.2.2), e
+1 job = 1 conta → na prática, no máximo 1 `complete_backfill_segment` "em
+voo" por job a qualquer momento (segmentos do mesmo job são processados
+em série). Mesmo assim, o `UPDATE` do job é condicional e idempotente —
+numa hipotética concorrência futura, o pior caso é nenhuma das duas
+chamadas marcar `completed` na mesma rodada (nunca uma marcação
+incorreta/duplicada). Nenhum lock global novo.
+
+### Testado como (pura, `lib/backfill/job-completion.ts`)
+
+`shouldAutoCompleteJob(jobStatus, segmentStatuses)` espelha exatamente o
+`WHERE` do UPDATE de job — testável em Vitest sem banco (a migration não
+está aplicada). 11 testes: 1 segmento done/skipped → completed; done+pending/
+done+running/done+failed → continua running; mix done+skipped → completed;
+paused/cancelled/failed/exhausted/completed/pending → nunca altera; sem
+segmentos → nunca completa.
+
+### Edge Function
+
+**Não alterada.** Continua chamando `complete_backfill_segment` e lendo
+só o retorno `boolean` — o lifecycle do job é resolvido inteiramente pelo
+banco.
 
 ## Próximos blocos (ordem por dependência técnica)
 
 `V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2A` Historical Backfill
 Preflight ✅ · `V2.2.1` Backfill Control Plane ✅ (schema, Dev) ·
 `V2.2.2` Planner + Executor Foundation ✅ (schema, Dev) · `V2.2.3` Real
-Backfill Executor ✅ (código, mocks — piloto real NÃO executado) · `V2.3`
+Backfill Executor ✅ (piloto real V2.2.3B concluído no Dev) · `V2.2.4`
+Automatic Job Finalization ✅ (migration local, NÃO aplicada) · `V2.3`
 Custom ranges & reach on-demand · `V2.4` Metric catalog expansion · `V2.5`
 Dashboard Builder data contract + gráficos novos (backend) · `V2.6` Breakdowns ·
 `V2.7` Account Financial + Alerts · `V2.8` Creative Ranking · `V2.9` Client Goals
@@ -922,14 +1007,19 @@ Scale hardening (condicional).
   `meta_rate_budget` persistido.
 - **Real Backfill Executor (DATA V2.2.3)** — executor de 1 segmento REAL
   (paginação, heartbeat/fencing, idempotência, error classification,
-  rate usage, segurança de token) construído e testado com MOCKS; Edge
-  Function `meta-backfill-executor` criada mas **NÃO deployada**. Nenhuma
-  chamada real à Meta nesta sessão; nenhum Cron; nenhum job/segmento real
-  criado/reivindicado; nenhuma migration nova (control plane V2.2.1/V2.2.2
-  já era suficiente); `meta_insights_periodic` fora do escopo (Daily Only
-  — ver seção acima); piloto real (Dev, conexão reautorizada) planejado,
-  **não executado**.
-- **Prod continua intocado por toda a DATA V2** (V2.0 a V2.2.2) — só Dev
-  recebeu as migrations do Control Plane e da Planner + Executor Foundation.
-  Nenhum Edge Function, Vault, secret, Meta API ou deploy tocado. Nenhuma
-  mudança visual. Nenhuma mudança numérica no que já está em produção.
+  rate usage, segurança de token) construído e testado com MOCKS + `deno
+  check`/`deno test` reais; Edge Function `meta-backfill-executor` criada e
+  **piloto real V2.2.3B concluído no Supabase Dev** (Meta real, zero-data,
+  escrita, idempotência confirmados). `meta_insights_periodic` fora do
+  escopo (Daily Only — ver seção acima).
+- **Automatic Job Finalization (DATA V2.2.4)** — reconciliação atômica do
+  job dentro de `complete_backfill_segment`, migration local criada e
+  **NÃO aplicada** (nem Dev, nem Prod). Nenhuma coluna nova, nenhuma
+  mudança de trigger/máquina de estados, assinatura pública da RPC
+  inalterada, Edge Function não tocada. `exhausted` continua reservado ao
+  discovery futuro — não usado por esta regra.
+- **Prod continua intocado por toda a DATA V2** (V2.0 a V2.2.4) — só Dev
+  recebeu as migrations do Control Plane e da Planner + Executor Foundation
+  (e o piloto real V2.2.3B); a migration da V2.2.4 nem no Dev foi aplicada
+  ainda. Nenhum Vault/secret/deploy de Prod tocado. Nenhuma mudança visual.
+  Nenhuma mudança numérica no que já está em produção.
