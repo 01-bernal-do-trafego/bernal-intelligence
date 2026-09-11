@@ -278,6 +278,60 @@ export class GraphPaginationOverflow extends Error {
 }
 
 /**
+ * DATA V2.2.3 — 1 única página de um edge do nó da conta. Extraída de
+ * `listEdge` (refactor MÍNIMO, comportamento idêntico — `listEdge` abaixo
+ * agora delega para esta função dentro do MESMO loop `do/while`, byte a byte
+ * equivalente ao que fazia inline antes). Existe para o Historical Backfill
+ * poder pausar ENTRE páginas (heartbeat/ownership check) sem duplicar
+ * construção de URL/headers/parsing — o MESMO (e único) cliente HTTP da
+ * Graph API usado pelo Current Sync.
+ */
+async function fetchEdgePage(
+  input: GraphConfig & {
+    token: string;
+    path: string;
+    fields: string;
+    params?: Record<string, string>;
+    pageLimit?: number;
+    /** cursor a usar (`after`); `null` = primeira página. */
+    after: string | null;
+  },
+): Promise<{ rows: unknown[]; nextCursor: string | null }> {
+  const endpoint = `${input.graphBase.replace(/\/+$/, "")}/${input.version}/${input.path.replace(/^\/+/, "")}`;
+  const limit = String(input.pageLimit ?? 100);
+
+  const url = new URL(endpoint);
+  url.searchParams.set("fields", input.fields);
+  url.searchParams.set("limit", limit);
+  for (const [k, v] of Object.entries(input.params ?? {})) {
+    url.searchParams.set(k, v);
+  }
+  if (input.after) url.searchParams.set("after", input.after);
+
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: `Bearer ${input.token}` },
+  });
+  captureRateUsage(res.headers);
+  const body = (await res.json().catch(() => null)) as
+    | { data?: unknown; paging?: { next?: unknown; cursors?: { after?: unknown } } }
+    | null;
+
+  if (!res.ok || !body) {
+    throw new GraphApiError(classifyGraphError(body));
+  }
+  const rows = Array.isArray(body.data) ? body.data : [];
+
+  const hasNext = Boolean(body.paging && typeof body.paging.next === "string");
+  const nextCursor =
+    hasNext && body.paging?.cursors && typeof body.paging.cursors.after === "string"
+      ? body.paging.cursors.after
+      : null;
+
+  return { rows, nextCursor };
+}
+
+/**
  * GET paginado de um edge do nó da conta (`/{act_id}/<edge>`), seguindo o
  * cursor `after`. Token sempre no header. Acumula TODAS as linhas — o chamador
  * só persiste quando o edge terminou 100%. Estoura `GraphPaginationOverflow`
@@ -294,8 +348,6 @@ export async function listEdge(
     maxPages?: number;
   },
 ): Promise<{ rows: unknown[]; pages: number }> {
-  const endpoint = `${input.graphBase.replace(/\/+$/, "")}/${input.version}/${input.path.replace(/^\/+/, "")}`;
-  const limit = String(input.pageLimit ?? 100);
   const maxPages = input.maxPages ?? 200;
 
   const rows: unknown[] = [];
@@ -304,34 +356,9 @@ export async function listEdge(
 
   do {
     pages += 1;
-    const url = new URL(endpoint);
-    url.searchParams.set("fields", input.fields);
-    url.searchParams.set("limit", limit);
-    for (const [k, v] of Object.entries(input.params ?? {})) {
-      url.searchParams.set(k, v);
-    }
-    if (after) url.searchParams.set("after", after);
-
-    const res = await fetch(url, {
-      method: "GET",
-      headers: { Authorization: `Bearer ${input.token}` },
-    });
-    captureRateUsage(res.headers);
-    const body = (await res.json().catch(() => null)) as
-      | { data?: unknown; paging?: { next?: unknown; cursors?: { after?: unknown } } }
-      | null;
-
-    if (!res.ok || !body) {
-      throw new GraphApiError(classifyGraphError(body));
-    }
-    if (Array.isArray(body.data)) rows.push(...body.data);
-
-    const hasNext = Boolean(body.paging && typeof body.paging.next === "string");
-    const nextAfter =
-      body.paging?.cursors && typeof body.paging.cursors.after === "string"
-        ? body.paging.cursors.after
-        : null;
-    after = hasNext ? nextAfter : null;
+    const page = await fetchEdgePage({ ...input, after });
+    rows.push(...page.rows);
+    after = page.nextCursor;
 
     if (after && pages >= maxPages) {
       throw new GraphPaginationOverflow(input.path, pages);
@@ -501,5 +528,43 @@ export async function listInsights(
     params,
     pageLimit: input.pageLimit,
     maxPages: input.maxPages,
+  });
+}
+
+/**
+ * DATA V2.2.3 — 1 única página de insights (`time_range` explícito, série
+ * diária — SEM `datePreset`, que é exclusivo dos agregados periódicos do
+ * Current Sync). Usa o MESMO `insightFields`/`fetchEdgePage` de `listInsights`
+ * — zero cliente HTTP/campos duplicados. Quem pagina página a página é o
+ * chamador (Historical Backfill) para poder confirmar ownership do segmento
+ * ENTRE páginas — `listInsights` continua intocado (Current Sync).
+ */
+export async function listInsightsPage(
+  input: GraphConfig & {
+    token: string;
+    adAccountId: string; // act_123
+    level: "account" | "campaign" | "adset" | "ad";
+    timeRange: { since: string; until: string };
+    timeIncrement?: "1";
+    /** cursor a usar (`after`); `null` = primeira página. */
+    cursor: string | null;
+    pageLimit?: number;
+  },
+): Promise<{ rows: unknown[]; nextCursor: string | null }> {
+  const params: Record<string, string> = {
+    level: input.level,
+    time_range: JSON.stringify({ since: input.timeRange.since, until: input.timeRange.until }),
+  };
+  if (input.timeIncrement) params.time_increment = input.timeIncrement;
+
+  return fetchEdgePage({
+    graphBase: input.graphBase,
+    version: input.version,
+    token: input.token,
+    path: `${input.adAccountId}/insights`,
+    fields: insightFields(input.level),
+    params,
+    pageLimit: input.pageLimit,
+    after: input.cursor,
   });
 }

@@ -660,12 +660,226 @@ nenhum adapter real para `fetchInsights`/`upsertDaily`/`isAccountLinked`/
 `canRunBackfill`; nenhum Cron de backfill; nenhum deploy de executor;
 nenhum `meta_rate_budget` persistido; nenhuma mudança em produção.
 
+## DATA V2.2.3 — Real Backfill Executor
+
+Transforma a fundação da V2.2.2 (contrato puro, sem adapter) num executor
+REAL capaz de processar exatamente **1 segmento** de Historical Backfill —
+ainda **sem chamar a Meta nesta sessão** (build + testes com mocks; o
+piloto real fica para uma autorização separada).
+
+### Auditoria do Current Sync — o que foi reutilizado (nada duplicado)
+
+- **`listInsights`/`listEdge`** (`_shared/graph.ts`) — mesmo cliente HTTP.
+  Refactor MÍNIMO: extraída `fetchEdgePage` (1 página) do corpo do loop de
+  `listEdge` — `listEdge` passou a DELEGAR para ela, comportamento
+  idêntico (mesma URL, mesmos headers, mesmo overflow guard, mesma
+  acumulação). Nova função `listInsightsPage` (1 página, `time_range` +
+  `time_increment=1`, sem `datePreset` — exclusivo do Backfill) usa a
+  MESMA `fetchEdgePage`/`insightFields` de `listInsights`.
+- **`toDailyRows`/`normalizeActions`** (`_shared/insights.ts`/`actions.ts`)
+  — o MESMO normalizador do Current Sync, importado tal como está. Nenhum
+  segundo normalizador, nenhum mapeamento de `action_type` duplicado.
+- **`classifyGraphError`/`GraphApiError`** (`_shared/graph.ts`) — mesma
+  classificação de erro; o executor não reclassifica nada a partir do
+  código bruto da resposta Meta.
+- **`openToken`** (`_shared/crypto.ts`) — mesma descriptografia AES-256-GCM.
+- **`getRateUsage`/`resetRateUsage`** (`_shared/graph.ts`) — mesmo
+  acumulador de rate usage por invocação.
+
+Achado da auditoria (reportado, não corrigido silenciosamente): a porta
+`fetchInsights`/`upsertDaily` da V2.2.2 usava `NormalizedDailyRow` (Query
+Layer, DATA V2.1) — tipo insuficiente para popular `meta_insights_daily`
+de verdade (falta `ad_account_ref`/`ad_account_id`, `campaign_id`/
+`adset_id`/`ad_id`). Corrigido nesta etapa: novo tipo
+`BackfillInsightRow` (`lib/backfill/insight-row.ts`), estruturalmente
+idêntico ao `DailyInsightRow` que `toDailyRows` já produz.
+
+### Arquitetura — par espelhado (Node puro × Deno real)
+
+Fronteira Deno não importa de `lib/` (regra já estabelecida no projeto,
+ver cabeçalho de `sync-core.ts`) — por isso o executor existe em DOIS
+lugares, mantidos em sync manualmente (MESMO padrão já usado para
+`_shared/insights.ts` ⟷ `lib/meta/normalizer.ts`):
+
+- **`lib/backfill/executor.ts`** (Node, PURO, testado por Vitest) — o
+  algoritmo de referência: `isAccountLinked` → `canRunBackfill` → por
+  página `[heartbeat → fetch → heartbeat → upsert]` → `complete/fail`.
+  Toda operação com efeito colateral é injetada (`BackfillExecutorDeps`)
+  — nenhuma chamada de rede é estruturalmente possível aqui.
+- **`supabase/functions/meta-backfill-executor/index.ts`** (Deno, GLUE
+  fina, REAL) — mesmo algoritmo passo a passo, comentário cruzado no
+  topo do arquivo. NÃO testado por Vitest (fora do runtime Node) — mesmo
+  limite já aceito para `sync-core.ts`/`meta-sync/index.ts` no projeto.
+
+### Paginação
+
+Página a página (não acumula tudo em memória): `nextCursor` seguido com
+guarda contra cursor repetido (`seenCursors`, aborta com
+`pagination_loop_detected`) e teto defensivo `maxPages` (200, mesmo
+default de `listEdge`; excedido → `pagination_overflow`). Página vazia é
+válida (0 linhas, com ou sem próxima página).
+
+### Heartbeat / ownership
+
+`extend_backfill_segment_lease` (RPC já existente da V2.2.2) serve como
+heartbeat E check de posse — a MESMA chamada só sucede se ainda formos o
+dono. Chamado ANTES de cada request e ANTES de cada write (2x por
+página). `false` em qualquer ponto → aborta IMEDIATAMENTE com
+`{status:"refused", ownership_lost:true}` — nunca escreve depois de
+perder a posse, nunca tenta `complete`/`fail` com o token antigo.
+
+### Idempotência
+
+Cada página é upsertada assim que chega (sem acumular para o fim) — se
+uma página posterior falhar, as páginas já escritas PERMANECEM (sem
+rollback). Reexecutar o segmento inteiro é seguro: `upsert` usa a MESMA
+natural key de `meta_insights_daily` (`level,entity_id,date,
+attribution_window`) do Current Sync — dados já escritos são só
+sobrescritos pelo mesmo valor, nunca duplicados. Testado explicitamente
+(rodar o mesmo segmento 2x → mesmo estado final).
+
+### Zero data
+
+Página única vazia sem próxima página → `skipped_no_data` (não é erro),
+`rows_written=0`, `pages_fetched` reflete a chamada realizada.
+
+### Error classification / retry
+
+Reutiliza o vocabulário de `classifyGraphError` (`token_revoked`/
+`insufficient_permission`/`rate_limited`/`transient`/`unknown`) — nenhuma
+heurística nova. Backoff conservador por categoria
+(`lib/backfill/error-classification.ts`, espelhado no Edge Function):
+`rate_limited` 30min, `transient` 5min, `unknown` 15min, `token_revoked`/
+`insufficient_permission` 60min. SEGMENT `failed` continua retryable
+(V2.2.1) — nenhuma categoria "terminal" nova. `token_revoked` (e só esse
+— mesma regra de `sync-core.ts`) marca `meta_connections.status =
+'reauthorization_required'`; `insufficient_permission` NÃO.
+
+### Rate usage
+
+`canRunBackfill` (`lib/backfill/rate-limit.ts`, espelhado no Edge
+Function) checado ANTES de cada página — não só uma vez no início.
+`meta_rate_budget` continua **não criado** (decisão mantida da V2.2.2).
+
+### Conta/conexão ainda válida
+
+Auditado antes de decidir (pedido explícito): a elegibilidade do Current
+Sync (`meta_eligible_ad_accounts`) exige `mc.status in ('active',
+'expiring')`; o control plane do Backfill (claim) exige só `is_linked`.
+**Decisão revista (ajuste pós-entrega): o executor AGORA exige
+explicitamente `meta_connections.status in ('active', 'expiring')`** —
+MESMA lista de `meta_eligible_ad_accounts`, checada por consulta direta
+(`connection_id` já resolvido pelo claim) em vez de reusar a VIEW (que
+filtra `meta_ad_accounts` para DESCOBRIR contas elegíveis — propósito
+diferente de validar uma conta JÁ claimada). O check acontece ANTES da
+resolução de secret/token e ANTES de qualquer `listInsightsPage` — uma
+conexão `reauthorization_required`/`revoked`/qualquer status fora da
+lista nunca chega a decifrar token nem chamar a Meta
+(`fail(..., "connection_not_eligible")`, sem reescrever o status — a
+conexão já está no estado correto). A resolução de secret continua como
+segunda camada de defesa (`no_connection_secret`/`decrypt_failed`,
+MESMO side-effect de `sync-core.ts`) para o caso de secret ausente/corrompido
+mesmo com status elegível.
+
+### Segurança de token
+
+Mesmo padrão de `sync-core.ts`: token descriptografado só em memória da
+invocação; nunca retornado, nunca logado, nunca persistido em claro.
+Autenticação por secret PRÓPRIO (`META_BACKFILL_EXECUTOR_SECRET`,
+dedicado — não reaproveita `META_SYNC_CRON_SECRET`), comparação em tempo
+constante, `verify_jwt=false` (backend-only, nenhum JWT de usuário).
+
+### Claim — nunca contorna o control plane
+
+Sempre via RPC `claim_next_backfill_segment` (V2.2.1/V2.2.2) — a Edge
+Function recebe só `{ jobId? }` opcional, NUNCA aceita `segment_id` do
+chamador. 1 invocação = no máximo 1 tentativa de 1 segmento (`idle` se
+nada elegível) — não planeja, não faz loop, não cria jobs, não vira Cron.
+
+### Equivalência Current Sync × Backfill
+
+Não existem DOIS caminhos para comparar — o Backfill reutiliza
+`toDailyRows` literalmente (mesma importação). Um teste "compare os dois
+caminhos" seria estruturalmente vazio. Provado em vez disso:
+(1) guarda estática — os dois arquivos importam `toDailyRows` do MESMO
+`_shared/insights.ts`; (2) `BackfillInsightRow` é campo-a-campo idêntico
+ao `DailyInsightRow` real (comparado contra o código-fonte). Uma tentativa
+de EXECUTAR `toDailyRows` dentro de um teste Vitest (possível — o arquivo
+não usa nenhuma API Deno) esbarrou em `tsc --noEmit`: `supabase/functions`
+está fora do `include` do `tsconfig.json`, e seus imports usam extensão
+`.ts` explícita (exigida pelo Deno) — o que dispara `TS5097` assim que um
+arquivo de dentro do `include` importa de lá. Corrigir exigiria
+`allowImportingTsExtensions` no `tsconfig.json` (config global,
+compartilhada) — decisão NÃO tomada nesta etapa (fora do pedido, efeito
+maior que o valor do teste). Documentado em
+`tests/backfill/normalizer-equivalence.test.ts`.
+
+### periodic — fora do escopo (Daily Only)
+
+`meta_insights_periodic` **não é tocada** nesta etapa. O Current Sync usa
+`meta_upsert_insights_periodic` sobre agregados por `datePreset` — uma
+abstração pensada para o RUNTIME OPERACIONAL (hoje/ontem/last_30d...), não
+para um intervalo histórico arbitrário de um segmento de backfill (`date_from`/
+`date_to` explícitos não mapeiam 1:1 para nenhum preset). Reaproveitá-la
+sem uma reformulação significaria inventar uma agregação
+periódica artificial — proibido explicitamente (`meta_insights_periodic
+só deve ser tocada se já houver abstração naturalmente reutilizável`).
+**Não há.** Fica documentado como decisão, não como pendência silenciosa.
+
+### Gate de runtime Deno (pós-implementação)
+
+`npm run typecheck` (Next/tsc) **não cobre** `supabase/functions` (fora do
+`include` do `tsconfig.json`) — os 1160+ testes Vitest não garantiam, sozinhos,
+que a Edge Function realmente compilasse no runtime Deno. Deno instalado
+localmente (usuário, sem sudo, `~/.deno`) só para fechar este gate.
+`deno check` em TODAS as Edge Functions (novas e pré-existentes) e em TODO
+`_shared/*.ts`: **limpo**. Achado real no caminho: `_shared/crypto.ts` tinha
+2 erros de tipo PRÉ-EXISTENTES (`Uint8Array` × `BufferSource`, TS 6.0.3 do
+Deno atual mais estrito que quando o arquivo foi escrito) — afetavam
+IGUALMENTE `meta-sync`/`meta-sync-scheduled`/`meta-oauth-exchange` já em
+produção; nunca detectados porque `deno check` nunca tinha rodado neste
+projeto. Corrigido (2 `as BufferSource`, aprovado explicitamente antes de
+tocar — zero mudança de runtime, só satisfaz o type-checker).
+`supabase/functions/_shared/insights.test.ts` (Deno nativo, 4 testes) prova
+`toDailyRows` executando de verdade (não mock) — fecha a lacuna que a
+tentativa via Vitest não conseguiu fechar sem tocar o `tsconfig.json` do
+Next (documentado em `tests/backfill/normalizer-equivalence.test.ts`).
+
+### O que ainda NÃO roda
+
+Nenhuma chamada real à Meta nesta sessão (guardado por teste estático +
+comportamental). Nenhum deploy da Edge Function. Nenhum Cron. Nenhum job/
+segmento real criado/reivindicado em Dev. Nenhuma migration nova (o
+control plane V2.2.1/V2.2.2 já aplicado no Dev foi suficiente — nenhum
+estado indispensável faltando). `META_BACKFILL_EXECUTOR_SECRET` é só um
+NOME de env var referenciado no código — nenhum secret configurado no
+Supabase nesta sessão. `supabase/config.toml` continua não existindo —
+`verify_jwt=false` é uma flag de `supabase functions deploy --no-verify-jwt`,
+documentada no cabeçalho do arquivo (mesmo padrão de `meta-sync-scheduled`).
+
+### Primeiro piloto (plano — não executado)
+
+1. Supabase Dev, 1 conta linkada com conexão REAUTORIZADA (as conexões
+   Dev estão hoje `reauthorization_required` — reautorizar via OAuth real
+   é pré-requisito, fora desta sessão).
+2. `level=account`, intervalo de 2–3 dias, 1 job → 1 segmento (via
+   `claim_next_backfill_segment(p_job_id)`).
+3. Invocação manual da Edge Function (sem Cron) — 1 POST, observar a
+   resposta (`status`, `pages_fetched`, `rows_written`) e conferir
+   `meta_insights_daily` manualmente.
+4. Confirmar idempotência: reinvocar o mesmo job (novo claim do MESMO
+   segmento, se ainda `pending`, ou um segmento equivalente) e confirmar
+   que o estado final não duplica.
+5. Só depois: `level=campaign` pequeno.
+6. Só depois disso: `adset`/`ad` (Atacado do Chinelo, 95 ads, é o
+   candidato natural de teste de carga — DATA V2.2A/V2.2.2).
+
 ## Próximos blocos (ordem por dependência técnica)
 
 `V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2A` Historical Backfill
 Preflight ✅ · `V2.2.1` Backfill Control Plane ✅ (schema, Dev) ·
-`V2.2.2` Planner + Executor Foundation ✅ (schema, Dev) · `V2.2.3` Backfill
-Executor real (adapter Meta, deploy, Cron de baixa prioridade) · `V2.3`
+`V2.2.2` Planner + Executor Foundation ✅ (schema, Dev) · `V2.2.3` Real
+Backfill Executor ✅ (código, mocks — piloto real NÃO executado) · `V2.3`
 Custom ranges & reach on-demand · `V2.4` Metric catalog expansion · `V2.5`
 Dashboard Builder data contract + gráficos novos (backend) · `V2.6` Breakdowns ·
 `V2.7` Account Financial + Alerts · `V2.8` Creative Ranking · `V2.9` Client Goals
@@ -706,6 +920,15 @@ Scale hardening (condicional).
   só no Dev**. Nenhum planner real gerando segmentos de um job de verdade;
   nenhum executor real chamando a Meta; nenhum Cron de backfill; nenhum
   `meta_rate_budget` persistido.
+- **Real Backfill Executor (DATA V2.2.3)** — executor de 1 segmento REAL
+  (paginação, heartbeat/fencing, idempotência, error classification,
+  rate usage, segurança de token) construído e testado com MOCKS; Edge
+  Function `meta-backfill-executor` criada mas **NÃO deployada**. Nenhuma
+  chamada real à Meta nesta sessão; nenhum Cron; nenhum job/segmento real
+  criado/reivindicado; nenhuma migration nova (control plane V2.2.1/V2.2.2
+  já era suficiente); `meta_insights_periodic` fora do escopo (Daily Only
+  — ver seção acima); piloto real (Dev, conexão reautorizada) planejado,
+  **não executado**.
 - **Prod continua intocado por toda a DATA V2** (V2.0 a V2.2.2) — só Dev
   recebeu as migrations do Control Plane e da Planner + Executor Foundation.
   Nenhum Edge Function, Vault, secret, Meta API ou deploy tocado. Nenhuma

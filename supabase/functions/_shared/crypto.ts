@@ -58,7 +58,13 @@ async function importKey(
       `META_TOKEN_ENC_KEY deve ter 32 bytes (AES-256); recebeu ${raw.byteLength}.`,
     );
   }
-  return crypto.subtle.importKey("raw", raw, { name: "AES-GCM" }, false, usages);
+  // `raw as BufferSource`: TS 6.0.3 (Deno atual) tipa `new Uint8Array(n)` como
+  // `Uint8Array<ArrayBufferLike>` (aceita SharedArrayBuffer), mais estrito que
+  // `BufferSource`/`ArrayBufferView<ArrayBuffer>`. NUNCA é uma SharedArrayBuffer
+  // de verdade aqui (sempre vem de base64ToBytes/hexToBytes) — só satisfaz o
+  // type-checker, ZERO mudança de runtime. Achado por deno check (1ª vez rodado
+  // neste projeto) — mesmo padrão em `openToken` abaixo.
+  return crypto.subtle.importKey("raw", raw as BufferSource, { name: "AES-GCM" }, false, usages);
 }
 
 /** Cifra o token e devolve cipher / iv / tag separados, em base64. */
@@ -115,10 +121,12 @@ export async function openToken(
   combined.set(cipher, 0);
   combined.set(tag, cipher.length);
 
+  // `iv as BufferSource` / `combined as BufferSource`: mesmo motivo do cast em
+  // `importKey` acima (TS 6.0.3/Deno atual, zero mudança de runtime).
   const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv, tagLength: 128 },
+    { name: "AES-GCM", iv: iv as BufferSource, tagLength: 128 },
     key,
-    combined,
+    combined as BufferSource,
   );
   return new TextDecoder().decode(plain);
 }

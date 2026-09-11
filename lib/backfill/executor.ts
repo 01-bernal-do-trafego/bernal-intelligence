@@ -1,26 +1,51 @@
 /**
- * DATA V2.2.2 — Historical Backfill. Executor FOUNDATION. Módulo PURO.
+ * DATA V2.2.3 — Real Backfill Executor. Orquestração de UM segmento. Módulo PURO.
  *
- * Contrato/orquestração de UM segmento — `executeBackfillSegment(task, deps)`.
- * TODA operação com efeito colateral (checar conta linkada, checar rate
- * budget, buscar da Meta, normalizar/upsert, finalizar com fencing) é
- * INJETADA via `BackfillExecutorDeps` — nenhuma implementação real existe
- * neste módulo. Em particular, `fetchInsights` é só um TIPO: não há adapter
- * real de Meta aqui, então esta fase estruturalmente NÃO PODE fazer uma
- * chamada de rede — só um teste com um fake/mock pode "rodar" isto.
+ * Evolui a fundação da V2.2.2 (que só tinha um `fetchInsights` de tiro único,
+ * sem paginação visível) para o fluxo REAL de um segmento:
  *
- * A função em si é pura o bastante para testar sem I/O: dado um `deps` fake,
- * o comportamento é 100% determinístico.
+ *   is_linked -> rate check -> [por página: heartbeat -> fetch -> heartbeat ->
+ *   upsert] -> complete/fail (com fencing)
  *
- * Responsabilidades futuras (DATA V2.2.3+, adapter real):
- *   - implementar `isAccountLinked`/`canRunBackfill`/`fetchInsights`/
- *     `upsertDaily` de verdade (Supabase + Meta Graph API);
- *   - implementar `completeSegment`/`failSegment` chamando as RPCs
- *     `complete_backfill_segment`/`fail_backfill_segment` (DATA V2.2.2, já
- *     existem no schema, não aplicadas ainda).
+ * TODA operação com efeito colateral (checar conta linkada, rate budget,
+ * heartbeat, buscar 1 página da Meta JÁ NORMALIZADA, upsert, marcar
+ * conexão para reautorização, completar/falhar com fencing) é INJETADA via
+ * `BackfillExecutorDeps` — nenhuma implementação real, nenhuma chamada de
+ * rede, nenhum SQL aqui. O adapter real (Deno, `supabase/functions/
+ * meta-backfill-executor/index.ts`) implementa as portas reutilizando
+ * `_shared/graph.ts`/`_shared/insights.ts`/`_shared/crypto.ts` — o MESMO
+ * caminho do Current Sync (zero normalizador/mapeamento de actions/cliente
+ * HTTP duplicado). Este módulo e o adapter Deno são um PAR ESPELHADO — igual
+ * ao par `_shared/insights.ts` / `lib/meta/normalizer.ts` já existente no
+ * projeto (fronteira Deno não importa de `lib/`, então o CONTROLE de fluxo
+ * — não a normalização de dado — é mantido idêntico "à mão" nos dois lados;
+ * mantenha-os em sync se um mudar).
+ *
+ * FENCING: `heartbeat`/`completeSegment`/`failSegment` podem devolver
+ * `false` (posse perdida) a qualquer momento — o loop para IMEDIATAMENTE e
+ * devolve `{kind:"refused", reason:"ownership_lost", ...}`. NUNCA escreve
+ * dados depois de perder a posse; NUNCA tenta complete/fail de novo com o
+ * mesmo token como se ainda fosse dono.
+ *
+ * PAGINAÇÃO: limite defensivo (`maxPages`), detecção de cursor repetido
+ * (aborta com segurança — nunca laço infinito), página vazia é válida
+ * (0 linhas, `nextCursor` pode ou não existir).
+ *
+ * IDEMPOTÊNCIA: cada página é upsertada assim que chega (não acumula tudo em
+ * memória para o fim) — se uma página posterior falhar, as páginas já
+ * upsertadas PERMANECEM (não há rollback) e o segmento é marcado `failed`
+ * (retryable). Reexecutar o segmento inteiro é seguro: `upsertRows` usa a
+ * mesma natural key de `meta_insights_daily` (mesma garantia do V1) — dados
+ * já escritos são apenas sobrescritos pelo mesmo valor, nunca duplicados.
  */
 import type { BackfillLevel } from "./types";
-import type { NormalizedDailyRow } from "@/lib/query/types";
+import type { BackfillInsightRow } from "./insight-row";
+import { dedupeRows } from "./insight-row";
+import type { BackfillErrorKind } from "./error-classification";
+import { computeNextRetryAt } from "./error-classification";
+
+/** Default igual ao `maxPages` de `listEdge` em `_shared/graph.ts` — mesmo teto defensivo. */
+export const DEFAULT_MAX_PAGES = 200;
 
 export interface BackfillSegmentTask {
   id: string;
@@ -33,20 +58,28 @@ export interface BackfillSegmentTask {
   level: BackfillLevel;
   dateFrom: string;
   dateTo: string;
-  /** Token de posse desta reivindicação (claim_next_backfill_segment) — obrigatório para finalizar. */
+  /** Token de posse desta reivindicação (claim_next_backfill_segment) — obrigatório para heartbeat/finalizar. */
   leaseToken: string;
 }
 
-export interface FetchInsightsArgs {
+export interface FetchPageArgs {
   adAccountId: string;
   level: BackfillLevel;
   dateFrom: string;
   dateTo: string;
+  /** cursor da página a buscar; `null` = primeira página. */
+  cursor: string | null;
 }
 
-export interface FetchInsightsResult {
-  rows: readonly NormalizedDailyRow[];
-  pages: number;
+export interface FetchPageResult {
+  /** linhas JÁ NORMALIZADAS (o adapter real chama toDailyRows internamente — nenhum normalizador aqui). */
+  rows: readonly BackfillInsightRow[];
+  /** cursor da PRÓXIMA página; `null` = não há mais páginas. */
+  nextCursor: string | null;
+}
+
+export interface UpsertResult {
+  rowsWritten: number;
 }
 
 export interface CompleteSegmentArgs {
@@ -61,87 +94,196 @@ export interface FailSegmentArgs {
   segmentId: string;
   leaseToken: string;
   errorCode: string;
+  nextRetryAt: string | null;
 }
 
 /**
- * Portas injetadas — cada uma corresponde a uma responsabilidade futura do
- * executor real. Nenhuma tem implementação aqui.
+ * Portas injetadas — cada uma corresponde a uma responsabilidade do executor
+ * real. Nenhuma tem implementação aqui.
  */
 export interface BackfillExecutorDeps {
-  /** DATA V2.2.2: reflete `meta_ad_accounts.is_linked` — recusa antes de gastar rate budget/chamar a Meta. */
+  /** reflete `meta_ad_accounts.is_linked` — recusa antes de gastar rate budget/chamar a Meta. */
   isAccountLinked: (adAccountRef: string) => Promise<boolean>;
-  /** `lib/backfill/rate-limit.ts#canRunBackfill` por trás — decide se HÁ folga para rodar agora. */
+  /** `lib/backfill/rate-limit.ts#canRunBackfill` por trás — checado antes de CADA página (pressão pode mudar entre páginas). */
   canRunBackfill: (adAccountRef: string) => Promise<boolean>;
-  /** NÃO implementado nesta fase — nenhuma chamada real à Meta existe no repositório. */
-  fetchInsights: (args: FetchInsightsArgs) => Promise<FetchInsightsResult>;
-  /** Upsert em `meta_insights_daily` — mesmo destino do Current Sync, adapter real futuro. */
-  upsertDaily: (rows: readonly NormalizedDailyRow[]) => Promise<{ rowsWritten: number }>;
+  /**
+   * RPC `extend_backfill_segment_lease` — heartbeat E check de ownership (a
+   * MESMA chamada serve para os dois: ela só sucede se ainda formos o dono).
+   * Chamado ANTES de cada request e ANTES de cada write. `false` = posse
+   * perdida — o worker deve parar IMEDIATAMENTE.
+   */
+  heartbeat: (segmentId: string, leaseToken: string) => Promise<boolean>;
+  /** NÃO implementado nesta camada — o adapter real busca 1 página da Meta e já normaliza (toDailyRows). */
+  fetchPage: (args: FetchPageArgs) => Promise<FetchPageResult>;
+  /** Upsert em `meta_insights_daily` — mesmo destino/mesma natural key do Current Sync. */
+  upsertRows: (rows: readonly BackfillInsightRow[]) => Promise<UpsertResult>;
   /** RPC `complete_backfill_segment` (fencing) — `false` = posse perdida. */
   completeSegment: (args: CompleteSegmentArgs) => Promise<boolean>;
   /** RPC `fail_backfill_segment` (fencing) — `false` = posse perdida. */
   failSegment: (args: FailSegmentArgs) => Promise<boolean>;
+  /** Só chamado quando o erro classificado é `token_revoked` — MESMA regra de sync-core.ts. Opcional (testes podem omitir). */
+  markReauthRequired?: () => Promise<void>;
 }
 
 export type ExecuteSegmentOutcome =
-  | { kind: "completed"; rowsWritten: number }
-  | { kind: "skipped_no_data" }
-  | { kind: "failed"; reason: string }
-  | { kind: "refused"; reason: "not_linked" | "rate_limited" | "ownership_lost" };
+  | { kind: "completed"; rowsWritten: number; pagesFetched: number }
+  | { kind: "skipped_no_data"; pagesFetched: number }
+  | {
+      kind: "failed";
+      errorClass: BackfillErrorKind;
+      reason: string;
+      pagesFetched: number;
+      rowsWritten: number;
+    }
+  | {
+      kind: "refused";
+      reason:
+        | "not_linked"
+        | "rate_limited"
+        | "ownership_lost"
+        | "pagination_loop_detected"
+        | "pagination_overflow";
+      pagesFetched: number;
+      rowsWritten: number;
+    };
+
+/** Extrai `.kind` de um erro rejeitado por `fetchPage`, se reconhecível (duck-typing — sem classe de erro compartilhada entre Node e Deno). */
+function errorKindFrom(err: unknown): BackfillErrorKind {
+  const kind = (err as { kind?: unknown } | null | undefined)?.kind;
+  if (
+    kind === "token_revoked" ||
+    kind === "insufficient_permission" ||
+    kind === "rate_limited" ||
+    kind === "transient" ||
+    kind === "unknown"
+  ) {
+    return kind;
+  }
+  return "unknown";
+}
+function errorCodeFrom(err: unknown): string {
+  if (err instanceof Error) return err.message.slice(0, 200) || "unknown_error";
+  return "unknown_error";
+}
+
+async function failWithFencing(
+  deps: BackfillExecutorDeps,
+  task: BackfillSegmentTask,
+  errorCode: string,
+  kind: BackfillErrorKind,
+  pagesFetched: number,
+  rowsWritten: number,
+): Promise<ExecuteSegmentOutcome> {
+  const ok = await deps.failSegment({
+    segmentId: task.id,
+    leaseToken: task.leaseToken,
+    errorCode,
+    nextRetryAt: computeNextRetryAt(kind),
+  });
+  return ok
+    ? { kind: "failed", errorClass: kind, reason: errorCode, pagesFetched, rowsWritten }
+    : { kind: "refused", reason: "ownership_lost", pagesFetched, rowsWritten };
+}
 
 /**
- * Orquestra UM segmento. Ordem: conta linkada -> rate budget -> fetch ->
- * (vazio -> skipped_no_data | com linhas -> upsert -> done) -> finaliza com
- * fencing. Qualquer `completeSegment`/`failSegment` retornando `false` vira
- * `{kind:"refused", reason:"ownership_lost"}` — nunca é tratado como sucesso
- * silencioso nem re-tentado com o MESMO `leaseToken`.
+ * Orquestra UM segmento do início ao fim. Ver cabeçalho do arquivo para o
+ * fluxo completo. `maxPages` é defensivo (mesmo default de `listEdge`).
  */
 export async function executeBackfillSegment(
   task: BackfillSegmentTask,
   deps: BackfillExecutorDeps,
+  opts: { maxPages?: number } = {},
 ): Promise<ExecuteSegmentOutcome> {
+  const maxPages = opts.maxPages ?? DEFAULT_MAX_PAGES;
+
   if (!(await deps.isAccountLinked(task.adAccountRef))) {
-    return { kind: "refused", reason: "not_linked" };
-  }
-  if (!(await deps.canRunBackfill(task.adAccountRef))) {
-    return { kind: "refused", reason: "rate_limited" };
+    return { kind: "refused", reason: "not_linked", pagesFetched: 0, rowsWritten: 0 };
   }
 
-  let fetched: FetchInsightsResult;
-  try {
-    fetched = await deps.fetchInsights({
-      adAccountId: task.adAccountId,
-      level: task.level,
-      dateFrom: task.dateFrom,
-      dateTo: task.dateTo,
-    });
-  } catch (err) {
-    const errorCode = err instanceof Error ? err.message.slice(0, 200) : "unknown_error";
-    const ok = await deps.failSegment({
-      segmentId: task.id,
-      leaseToken: task.leaseToken,
-      errorCode,
-    });
-    return ok ? { kind: "failed", reason: errorCode } : { kind: "refused", reason: "ownership_lost" };
+  let cursor: string | null = null;
+  let pagesFetched = 0;
+  let rowsWritten = 0;
+  const seenCursors = new Set<string>();
+
+  for (;;) {
+    // rate check ANTES de cada página — pressão de rate limit pode mudar entre páginas.
+    if (!(await deps.canRunBackfill(task.adAccountRef))) {
+      return { kind: "refused", reason: "rate_limited", pagesFetched, rowsWritten };
+    }
+
+    // 1. confirmar lease válida ANTES do request.
+    if (!(await deps.heartbeat(task.id, task.leaseToken))) {
+      return { kind: "refused", reason: "ownership_lost", pagesFetched, rowsWritten };
+    }
+
+    // 2. request (1 página, já normalizada pelo adapter).
+    let page: FetchPageResult;
+    try {
+      page = await deps.fetchPage({
+        adAccountId: task.adAccountId,
+        level: task.level,
+        dateFrom: task.dateFrom,
+        dateTo: task.dateTo,
+        cursor,
+      });
+    } catch (err) {
+      const kind = errorKindFrom(err);
+      const errorCode = errorCodeFrom(err);
+      if (kind === "token_revoked" && deps.markReauthRequired) {
+        await deps.markReauthRequired();
+      }
+      return failWithFencing(deps, task, errorCode, kind, pagesFetched, rowsWritten);
+    }
+    pagesFetched += 1;
+
+    // 3. antes de escrever, confirmar ownership DE NOVO.
+    if (!(await deps.heartbeat(task.id, task.leaseToken))) {
+      return { kind: "refused", reason: "ownership_lost", pagesFetched, rowsWritten };
+    }
+
+    // 4. normalizar já veio pronto -> upsert (idempotente pela natural key).
+    if (page.rows.length > 0) {
+      const { rowsWritten: written } = await deps.upsertRows(dedupeRows(page.rows));
+      rowsWritten += written;
+    }
+
+    // 5. paginação segura.
+    if (page.nextCursor === null) break;
+    if (seenCursors.has(page.nextCursor)) {
+      return failWithFencing(
+        deps,
+        task,
+        "pagination_loop_detected",
+        "unknown",
+        pagesFetched,
+        rowsWritten,
+      );
+    }
+    seenCursors.add(page.nextCursor);
+    if (pagesFetched >= maxPages) {
+      return failWithFencing(
+        deps,
+        task,
+        "pagination_overflow",
+        "unknown",
+        pagesFetched,
+        rowsWritten,
+      );
+    }
+    cursor = page.nextCursor;
   }
 
-  if (fetched.rows.length === 0) {
-    const ok = await deps.completeSegment({
-      segmentId: task.id,
-      leaseToken: task.leaseToken,
-      rowsWritten: 0,
-      pagesFetched: fetched.pages,
-      outcome: "skipped_no_data",
-    });
-    return ok ? { kind: "skipped_no_data" } : { kind: "refused", reason: "ownership_lost" };
-  }
-
-  const { rowsWritten } = await deps.upsertDaily(fetched.rows);
+  // zero data = nenhuma página teve linha alguma -> skipped_no_data (não é erro).
+  const outcome: "done" | "skipped_no_data" = rowsWritten > 0 ? "done" : "skipped_no_data";
   const ok = await deps.completeSegment({
     segmentId: task.id,
     leaseToken: task.leaseToken,
     rowsWritten,
-    pagesFetched: fetched.pages,
-    outcome: "done",
+    pagesFetched,
+    outcome,
   });
-  return ok ? { kind: "completed", rowsWritten } : { kind: "refused", reason: "ownership_lost" };
+  if (!ok) return { kind: "refused", reason: "ownership_lost", pagesFetched, rowsWritten };
+  return outcome === "done"
+    ? { kind: "completed", rowsWritten, pagesFetched }
+    : { kind: "skipped_no_data", pagesFetched };
 }
