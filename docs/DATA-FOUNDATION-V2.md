@@ -503,11 +503,169 @@ executor que chama a Meta, nenhum Cron, nenhum `meta_rate_budget`
 persistido, nenhum dado histórico novo em `meta_insights_daily`, nenhuma
 mudança em produção.
 
+## DATA V2.2.2 — Planner + Executor Foundation
+
+Resolve o bloqueador crítico deixado pela V2.2.1 (coordenação best-effort) e
+constrói a fundação de planejamento/execução — **sem planejar/rodar backfill
+nenhum de verdade ainda**. Duas migrations locais novas, **nenhuma aplicada**:
+`20260911100000_meta_backfill_sync_lock_coordination.sql` e
+`20260911110000_meta_backfill_executor_foundation.sql`. Aplicadas e validadas
+**só no Supabase Dev** — Prod permanece intocado.
+
+### Coordenação Current Sync × Backfill — agora ATÔMICA
+
+A V2.2.1 documentou a exclusão como best-effort (check-then-act sem lock
+compartilhado). Corrigido com o protocolo **lock + estado persistido**
+(auditado explicitamente — um advisory lock sozinho NÃO basta, porque
+`pg_advisory_xact_lock` solta no fim da transação, então "soltar o lock" não
+impede os dois lados de trabalharem em paralelo DEPOIS):
+
+1. **Mesma chave nos dois lados** — `meta_backfill_account_lock_key(uuid)`
+   (namespace fixo `77771` + `hashtext(ad_account_ref::text)`), 1 função só,
+   usada por `meta_sync_acquire_client` E `claim_next_backfill_segment`.
+2. **O lock protege só o INSTANTE da decisão**: sob o lock, cada lado (a)
+   checa o **estado persistido** do outro (`meta_sync_runs.status='running'`
+   ou `meta_backfill_segments.status='running'`) e (b) escreve o **próprio**
+   estado persistido — tudo na MESMA transação.
+3. Como as duas transações concorrentes na mesma conta disputam a MESMA
+   chave, uma delas **sempre espera a outra COMMITAR** antes de prosseguir —
+   e ao prosseguir, vê o estado já commitado do primeiro (visibilidade
+   garantida pelo MVCC do Postgres) e desiste.
+4. **Depois do commit o lock deixa de importar**: é o **estado persistido**
+   (a linha `running`) que qualquer aquisição FUTURA de qualquer lado vai
+   encontrar e respeitar — não o lock. O lock serializa só o par
+   (checar, escrever); o estado é quem garante exclusão durante o TRABALHO.
+
+`meta_sync_acquire_client` (Current Sync) ganhou um **loop de lock por conta
+elegível, em ordem determinística** (`order by ad_account_ref` — evita
+deadlock entre duas chamadas concorrentes da própria função, que nunca mais
+pegariam locks em ordens diferentes) **antes** do `INSERT...SELECT` existente.
+Se alguma conta tem backfill `running`, levanta a **MESMA** exceção
+`sync_already_running` do caso já existente — **zero mudança em
+`sync-core.ts`** (que já trata esse sentinel como skip esperado).
+`claim_next_backfill_segment` ganhou uma **fase 2**: depois de escolher 1
+segmento candidato (mesma lógica `FOR UPDATE SKIP LOCKED` da V2.2.1), toma o
+MESMO lock e rechecha `meta_sync_runs` antes de marcar o segmento `running`.
+
+Assinaturas **preservadas** nas duas funções — só o corpo muda.
+
+### Planner (`lib/backfill/planner.ts`, puro)
+
+`planBackfillSegments(input)` transforma a intenção de um job em
+`SegmentPlan[]` — **sem inserir nada no banco** (isso é do adapter real,
+V2.2.3+). Duas ordens deliberadas: dentro de cada nível, mais recente →
+mais antigo (valor operacional); entre níveis, sempre
+`account → campaign → adset → ad` (do mais barato/agregado ao mais
+granular/caro, nunca intercalado por data). Sem overlap/gap **por
+construção** (o próximo bloco sempre começa 1 dia antes do início do
+anterior). `targetStartDate = null` sem `resolvedEarliestDate` conhecida →
+`requiresDiscovery: true` e **zero segmentos** — nunca inventa um piso tipo
+"37 meses".
+
+### Tamanho dos blocos (`lib/backfill/block-size.ts`, puro)
+
+Faixas configuráveis (`account` 60–90d · `campaign`/`adset` 14–30d · `ad`
+7–14d) com um `default` por nível. Estratégia adaptativa **simples** (regra
+fixa por contagem de entidades — `resolveBlockSizeDays`): conta com mais de
+50 entidades naquele nível usa o bloco **mínimo** da faixa (mais chamadas,
+mais leves); conta menor usa o **máximo**. `account` sempre usa o `default`
+(1 linha/dia, sem heurística de tamanho). Cenário real conhecido (DATA
+V2.2A): **Atacado do Chinelo (95 ads)** cai no bloco mínimo — é o teste de
+carga natural; **Oversized Store (9 ads)** fica bem abaixo do limiar.
+Explicitamente **não** é "verdade universal" — a estratégia real (baseada em
+payload/timeout observados) só existe depois do primeiro backfill de
+verdade.
+
+### Discovery foundation (`lib/backfill/discovery.ts`, puro)
+
+`resolveEarliestDate(input)` formaliza a decisão de `resolvedEarliestDate`
+**sem chamar a Meta** — separado deliberadamente do planner. Prioridade:
+campanha mais antiga conhecida > `account.created_time` > nenhuma base
+(`unresolved`). `exhausted` = N blocos vazios consecutivos perto do início
+conhecido (a Meta já não tem mais nada) — precisa de uma base para reportar
+uma data; sem nenhuma, mesmo exaurido fica `unresolved`. A chamada real que
+POPULA esses fatos (buscar `campaign.created_time`/`account.created_time` na
+Meta) é executor, fase futura.
+
+### Executor foundation (`lib/backfill/executor.ts`, puro + portas injetadas)
+
+`executeBackfillSegment(task, deps)` — orquestração de 1 segmento: conta
+linkada → rate budget → busca → (vazio → `skipped_no_data` | com linhas →
+upsert → `done`) → finaliza com fencing. **Toda** operação com efeito
+colateral é uma porta injetada (`BackfillExecutorDeps`) — `fetchInsights` é
+só um TIPO, sem nenhuma implementação real no repositório; estruturalmente
+não há como este módulo fazer uma chamada de rede (guardado por teste, tanto
+comportamental quanto estático — grep por `fetch(`/`graph.facebook.com` no
+código-fonte). `completeSegment`/`failSegment` devolvendo `false` vira
+`{kind:"refused", reason:"ownership_lost"}` — nunca tratado como sucesso.
+
+### Fencing — RPCs de finalização (fecha a lacuna da V2.2.1)
+
+A V2.2.1 tinha `lease_token` no schema mas nenhuma RPC para usá-lo. Agora:
+
+- **`complete_backfill_segment(segment_id, lease_token, rows_written?,
+  pages_fetched?, outcome?)`** — `running → done | skipped_no_data`.
+- **`fail_backfill_segment(segment_id, lease_token, error_code?,
+  next_retry_at?)`** — `running → failed`.
+
+As duas exigem `WHERE status='running' AND lease_token=$2` — **compare-and-
+set**. Se um worker perdeu a posse (lease expirou, outro worker já
+reivindicou), a chamada afeta 0 linhas e devolve `false` (não lança, não
+sobrescreve o trabalho do worker atual).
+
+### Heartbeat / lease extension
+
+**`extend_backfill_segment_lease(segment_id, lease_token, lease?)`** — avança
+`lease_expires_at`, mesmo fencing por `lease_token`, **mantém o mesmo token**
+(não rotaciona) e **não muda `status`** (não é uma transição da máquina de
+estados — segmento continua `running`). Necessário para segmentos que
+demoram mais que a lease original.
+
+### Retry foundation
+
+**`meta_backfill_retry_eligible_segments()`** — `SEGMENT failed → pending`,
+em lote, só quando `next_retry_at is null or next_retry_at <= now()`. Mesmo
+padrão de `meta_backfill_release_stale_segments()` (V2.2.1): sem Cron
+chamando-a ainda. **Distinção mantida explicitamente**: SEGMENT `failed` é
+retryable (aqui); **JOB `failed` continua TERMINAL** (decisão da V2.2.1,
+reafirmada — nenhuma RPC de retry de job foi criada; retomar = job novo).
+
+### Rate-limit contract (`lib/backfill/rate-limit.ts`, puro)
+
+`canRunBackfill(snapshot, thresholds?)` — contrato que o executor real vai
+consultar antes de rodar um segmento. **`meta_rate_budget` (persistência)
+não foi criado nesta fase** — decisão explícita (o executor real ainda não
+chama a Meta, não há budget real para persistir ainda). O formato já espelha
+`RateUsageSummary` de `graph.ts` (`app_max_pct`/`ad_account_max_pct`/
+`buc_max_pct`/`throttled`) para que, quando `meta_rate_budget` existir, vire
+este mesmo shape sem mudar a assinatura. Limiares conservadores por padrão
+(60%) — o backfill é a prioridade mais baixa do sistema.
+
+### Current Sync intocado (além da coordenação mínima)
+
+`sync-core.ts`, normalizer, periodic, `dailyHorizon`, Auto Sync Cron,
+`meta_sync_release`, `meta_client_sync_health`, Edge Functions — **nenhum
+tocado**. `meta_sync_acquire_client` mudou **só** para acrescentar a
+coordenação (loop de lock + checagem); mesma assinatura, mesmo
+`RETURNS TABLE`, mesmo `sync_batch_id` compartilhado, mesmo
+`INSERT...SELECT` atômico, mesma semântica de `sync_already_running`/
+`no_eligible_account` — guardado por teste.
+
+### O que ainda NÃO roda
+
+As duas migrations **não foram aplicadas em Prod** (só Dev, para
+validação). Nenhum planner real gerando segmentos de um job de verdade;
+nenhum job/segmento real criado; nenhum executor real chamando a Meta;
+nenhum adapter real para `fetchInsights`/`upsertDaily`/`isAccountLinked`/
+`canRunBackfill`; nenhum Cron de backfill; nenhum deploy de executor;
+nenhum `meta_rate_budget` persistido; nenhuma mudança em produção.
+
 ## Próximos blocos (ordem por dependência técnica)
 
 `V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2A` Historical Backfill
-Preflight ✅ · `V2.2.1` Backfill Control Plane ✅ (schema local, não aplicado)
-· `V2.2.2` Backfill Planner + Executor · `V2.3`
+Preflight ✅ · `V2.2.1` Backfill Control Plane ✅ (schema, Dev) ·
+`V2.2.2` Planner + Executor Foundation ✅ (schema, Dev) · `V2.2.3` Backfill
+Executor real (adapter Meta, deploy, Cron de baixa prioridade) · `V2.3`
 Custom ranges & reach on-demand · `V2.4` Metric catalog expansion · `V2.5`
 Dashboard Builder data contract + gráficos novos (backend) · `V2.6` Breakdowns ·
 `V2.7` Account Financial + Alerts · `V2.8` Creative Ranking · `V2.9` Client Goals
@@ -537,10 +695,18 @@ Scale hardening (condicional).
   (`period_key='custom'` on-demand), **não** tem adapter real (Supabase) —
   só a porta `InsightsReader` documentada — e **não** define nenhum data
   contract de widget/gráfico.
-- **Backfill Control Plane (DATA V2.2.1)** — migration LOCAL, **não aplicada**
-  em Dev/Prod; nenhum job/segmento real; nenhum planner de datas; nenhum
-  executor/Edge Function que chama a Meta; nenhum Cron.
-- **Nenhuma migration aplicada.** As migrations desta fase (`meta_backfill_*`)
-  existem só como arquivo local. Nenhum Supabase, Edge Function, Cron, Vault,
-  secret, Meta API ou deploy tocado. Nenhuma mudança visual. Nenhuma mudança
-  numérica.
+- **Backfill Control Plane (DATA V2.2.1)** — aplicada e validada **só no
+  Supabase Dev**; Prod permanece no schema do GO-LIVE V1. Nenhum job/segmento
+  real; nenhum planner de datas; nenhum executor/Edge Function que chama a
+  Meta; nenhum Cron.
+- **Planner + Executor Foundation (DATA V2.2.2)** — coordenação atômica
+  Current Sync × Backfill (lock + estado persistido), planner puro, discovery
+  foundation, executor foundation (sem adapter real), fencing (finish/fail),
+  heartbeat, retry de segmento — **migrations locais, aplicadas e validadas
+  só no Dev**. Nenhum planner real gerando segmentos de um job de verdade;
+  nenhum executor real chamando a Meta; nenhum Cron de backfill; nenhum
+  `meta_rate_budget` persistido.
+- **Prod continua intocado por toda a DATA V2** (V2.0 a V2.2.2) — só Dev
+  recebeu as migrations do Control Plane e da Planner + Executor Foundation.
+  Nenhum Edge Function, Vault, secret, Meta API ou deploy tocado. Nenhuma
+  mudança visual. Nenhuma mudança numérica no que já está em produção.
