@@ -322,9 +322,192 @@ exatamente como `real-dashboard.ts`.
   isso é DATA V2.5, que consome `resolveMetricTotals`/`Series` por baixo.
 - **Sem UI, sem substituição do dashboard V1.**
 
+## DATA V2.2A — Historical Backfill Preflight
+
+Auditoria + queries read-only no Prod real antes de desenhar o backfill —
+ver `docs/HISTORICAL-BACKFILL-PREFLIGHT.md`. Resultado: **531 linhas / 816 kB**
+em `meta_insights_daily` hoje — **decisão: não particionar, não criar BRIN**
+agora (critérios objetivos e gatilhos futuros documentados ali). Achado
+confirmado que molda o Control Plane abaixo: `meta_client_sync_health` não
+diferencia `trigger`, então o backfill precisa de auditoria própria.
+
+## DATA V2.2.1 — Historical Backfill Control Plane
+
+Estrutura de CONTROLE do backfill: representa jobs/segmentos, estados,
+progresso e concorrência — **sem buscar nenhum dado da Meta ainda**. Migration
+local `20260910120000_meta_backfill_control_plane.sql`, **não aplicada** em
+Dev/Prod nesta fase.
+
+> **Micro-auditoria pós-implementação**: uma revisão do SQL real encontrou e
+> corrigiu, **antes de qualquer aplicação**, uma inconsistência genuína
+> (índice/RPC aceitavam `failed` no claim, mas a trigger só permitia
+> `failed→pending` — a combinação `failed→running` teria sido REJEITADA em
+> runtime) e 3 lacunas reais (nenhum limite a jobs ativos concorrentes por
+> conta; nenhuma verificação de `is_linked`; nenhum mecanismo de fencing contra
+> um worker obsoleto sobrescrever o resultado de outro). As seções abaixo já
+> refletem o estado CORRIGIDO.
+
+### Tabelas
+
+- **`meta_backfill_jobs`** — 1 processo histórico por (`client_id`,
+  `ad_account_ref`). Campos: `status`, `requested_levels` (reaproveita o enum
+  `meta_insight_level` — sem tipo paralelo), `target_start_date`/
+  `target_end_date`, `resolved_earliest_date` (fato observado, preenchido pelo
+  planner futuro), `priority`, `paused_at`/`started_at`/`finished_at`,
+  `last_error_code`/`last_error_at`, `created_by`/`created_at`/`updated_at`.
+  **Deliberadamente sem** `oldest_date_fetched`/`newest_backfilled_date`/
+  contadores de segmento — são DERIVÁVEIS de `meta_backfill_segments` (ver
+  `meta_backfill_progress` abaixo); guardá-los duas vezes arriscaria
+  inconsistência.
+- **`meta_backfill_segments`** — 1 bloco de datas de um job (`level` +
+  `date_from`/`date_to`). `attempt_count`/`last_attempt_at`/`last_error_code`/
+  `next_retry_at` (reservada, sem cálculo de backoff nesta fase),
+  `claimed_at`/`lease_expires_at`/`lease_token` (recuperação de worker morto +
+  fencing, ver "Concorrência e lease" abaixo), `rows_written`/`pages_fetched`,
+  `started_at`/`finished_at`.
+
+### Estados e transições
+
+**Job** (`meta_backfill_job_status`): `pending → running → {paused, completed,
+exhausted, failed, cancelled}`; `paused → running`; os 4 terminais não saem —
+retomar um job `failed` é **criar um novo job**, não reabrir o antigo.
+
+**Segmento** (`meta_backfill_segment_status`): `pending → running → {done,
+failed, skipped_no_data}`; `failed → pending` (retry — **duas etapas
+distintas**: primeiro `failed → pending`, só depois `pending → running` via
+claim); `running → pending` (recuperação de lease — não conta como falha).
+`done`/`skipped_no_data` são terminais. **`failed → running` NUNCA é válido**
+— corrigido explicitamente porque a versão inicial do claim tentava fazer
+exatamente isso (ver "Concorrência e lease").
+
+Ambas as máquinas são validadas em DOIS lugares que precisam concordar: uma
+trigger `BEFORE UPDATE` em cada tabela (`..._check_transition`, recusa
+transição inválida com `raise exception`) e `lib/backfill/transitions.ts`
+(`isValidJobTransition`/`isValidSegmentTransition`, puro, testado). O
+`attempt_count` é incrementado numa ÚNICA fonte (a trigger do segmento, ao
+entrar em `running` vindo **só** de `pending`) — nunca pelo chamador, nunca a
+partir de `failed` diretamente.
+
+### Isolamento do Current Sync (confirmado na DATA V2.2A) — BEST-EFFORT, não atômico
+
+O backfill **nunca** grava em `meta_sync_runs` — auditoria própria nas duas
+tabelas acima. `claim_next_backfill_segment` só **lê** `meta_sync_runs`
+(`NOT EXISTS ... status='running'`) para não competir com o Auto Sync pela
+MESMA conta na Meta. `meta_sync_runs`, `meta_client_sync_health`,
+`meta_sync_acquire_client`, `meta_clients_due_for_sync`,
+`meta_eligible_ad_accounts`, `meta_essential_stages`, o Cron atual —
+**nenhum foi tocado** por esta migration (guardado por teste).
+
+⚠️ **Isto NÃO é exclusão atômica** — é um check-then-act sem lock
+compartilhado com `meta_sync_acquire_client`. Existe uma janela real: o
+backfill pode checar "nenhum sync rodando", e um sync operacional pode
+adquirir a MESMA conta um instante depois, antes do backfill terminar seu
+`UPDATE`. Fechar isso de verdade exigiria os dois lados tomarem o mesmo
+`pg_advisory_xact_lock(hashtext(ad_account_ref::text))` — o que alteraria
+`meta_sync_acquire_client` (Current Sync), fora do escopo desta etapa.
+**Consequência prática**: nenhum executor real deve ser ligado (DATA V2.2.2+)
+sem resolver esta janela antes. Documentado explicitamente no SQL (não
+"fingido" como atômico) e coberto por teste.
+
+### Múltiplos jobs por conta — histórico permitido, ativo único
+
+Não existe (nem nunca existiu) `UNIQUE(client_id, ad_account_ref)`
+permanente — uma conta pode ter **N jobs históricos** ao longo do tempo
+(`completed`/`exhausted`/`failed`/`cancelled` nunca bloqueiam um job novo:
+reparo de gaps, extensão de histórico, novo backfill após novas métricas).
+O que a migration IMPEDE é **dois jobs ATIVOS conflitantes na mesma conta**:
+índice único parcial `meta_backfill_jobs_one_active_per_account (ad_account_ref)
+WHERE status IN ('pending','running','paused')`. Retomar um job `failed` é
+criar um novo job (decisão mantida) — e esse índice garante que isso funciona
+sem atrito assim que o antigo estiver num estado terminal.
+
+### Concorrência e lease
+
+`claim_next_backfill_segment(p_job_id?, p_lease default 10min)` — 1 `UPDATE`
+atômico cuja `WHERE` usa uma subquery com `FOR UPDATE OF s2 SKIP LOCKED`: dois
+workers concorrentes nunca reivindicam o mesmo segmento. **Só segmentos
+`pending`** de um job `running` **de conta ainda `is_linked = true`** são
+elegíveis — `failed` nunca é lido diretamente pelo claim (corrigido: a versão
+inicial aceitava `pending`/`failed` no índice e na RPC, mas a trigger só
+permitia `failed→pending` — a combinação `failed→running` teria sido
+rejeitada em runtime; agora índice, RPC e trigger concordam: só `pending`).
+`SECURITY DEFINER`, executável só por `service_role` (Next não ganha
+service-role client — a regra estrutural do projeto continua valendo).
+
+**Fencing (worker obsoleto)**: cada claim gera um `lease_token` novo
+(`gen_random_uuid()`), devolvido ao chamador. Cenário coberto: worker A perde
+a lease → `meta_backfill_release_stale_segments()` devolve o segmento a
+`pending` (zerando `lease_token`) → worker B reivindica e recebe um token
+NOVO → se A tentar "terminar" depois, uma futura RPC de finalização (DATA
+V2.2.2, ainda não existe) exigiria o token de volta
+(`WHERE id = ? AND lease_token = ?`) — o token de A não bate mais, a operação
+afeta 0 linhas em vez de sobrescrever o trabalho de B. O SCHEMA já tem o
+ingrediente (`lease_token`); a RPC de finalização em si é trabalho do
+executor, fora desta etapa.
+
+`meta_backfill_release_stale_segments()` devolve a `pending` todo segmento
+`running` com `lease_expires_at` vencida — sem Cron chamando-a nesta fase
+(chamada manual ou futura).
+
+### Pause / resume / retry
+
+Pause é um status do JOB: `claim_next_backfill_segment` só olha jobs
+`status='running'` — um job `paused` nunca fornece segmento
+(`canJobProvideSegments`, testado). Resume = voltar o job para `running`.
+Retry de segmento = `failed → pending`, com `attempt_count` avançando
+automaticamente na trigger.
+
+### Progresso / telemetria
+
+`meta_backfill_progress` (view, `security_invoker=true`) — `segments_total`/
+`pending`/`running`/`done`/`failed`/`skipped`, `progress_percent`,
+`earliest_completed_date`/`latest_completed_date`, tudo **derivado** de
+`meta_backfill_segments` via `count(...)`/`min`/`max` — nenhum contador
+duplicado no job. Nenhum log detalhado é guardado aqui (fica para uma camada
+futura, se necessário).
+
+### Segurança / RLS
+
+Mesmo padrão das tabelas `meta_*` atuais: RLS habilitada, **1 policy de
+SELECT** por tabela (`can_access_client`, direto em `meta_backfill_jobs`; via
+`EXISTS` no job pai em `meta_backfill_segments`, que não tem `client_id`
+direto), **nenhuma policy de INSERT/UPDATE/DELETE** para `authenticated` —
+escrita só via as RPCs `SECURITY DEFINER` (que só `service_role` executa) ou
+por bypass de RLS do próprio `service_role`. Nenhum service-role client no
+Next.
+
+### Isolamento cliente ↔ conta
+
+`meta_ad_accounts` já amarra `client_id`, mas nenhuma tabela `meta_*` atual
+valida a CONSISTÊNCIA entre um `client_id` próprio e o `client_id` de uma
+`ad_account_ref` referenciada (só `meta_lock_client_id`, que trava
+reatribuição, não a consistência inicial). Solução mínima criada:
+`meta_backfill_check_account_client()` (trigger `BEFORE INSERT`, confirma que
+a conta pertence ao cliente **E está `is_linked = true`** — não nasce job
+para conta desvinculada) + `meta_lock_ad_account_ref()` (trava reatribuição de
+conta, mesmo estilo de `meta_lock_client_id`) — as duas juntas impedem um job
+do cliente A apontar para conta do cliente B, na criação e depois dela.
+
+**Conta desvinculada DEPOIS que o job já existe**: a trigger de INSERT não
+roda de novo (não há como "revalidar" um job já criado por trigger). Quem
+barra esse caso é o **claim** (`claim_next_backfill_segment` rechecha
+`is_linked = true` a cada tentativa) — um job cuja conta foi desvinculada
+simplesmente para de receber segmentos novos, em vez de continuar
+"trabalhando" silenciosamente numa conta que o cliente não usa mais.
+
+### O que ainda NÃO existe
+
+Migration **não aplicada** em Dev/Prod. Nenhum job real, nenhum segmento
+real, nenhum planner de datas (7/14/30/90 dias — DATA V2.2.2), nenhum
+executor que chama a Meta, nenhum Cron, nenhum `meta_rate_budget`
+persistido, nenhum dado histórico novo em `meta_insights_daily`, nenhuma
+mudança em produção.
+
 ## Próximos blocos (ordem por dependência técnica)
 
-`V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2` Historical Backfill · `V2.3`
+`V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2A` Historical Backfill
+Preflight ✅ · `V2.2.1` Backfill Control Plane ✅ (schema local, não aplicado)
+· `V2.2.2` Backfill Planner + Executor · `V2.3`
 Custom ranges & reach on-demand · `V2.4` Metric catalog expansion · `V2.5`
 Dashboard Builder data contract + gráficos novos (backend) · `V2.6` Breakdowns ·
 `V2.7` Account Financial + Alerts · `V2.8` Creative Ranking · `V2.9` Client Goals
@@ -333,10 +516,14 @@ Scale hardening (condicional).
 
 ## Explicitamente NÃO feito nesta etapa
 
-- **Backfill histórico** — não implementado.
-- **Particionamento de `meta_insights_daily`** — não decidido. Antes de qualquer
-  backfill amplo faremos uma etapa separada de estimativa de volume + `EXPLAIN` +
-  tamanho de tabelas + risco de migration.
+- **Backfill histórico** — não implementado. O Control Plane (DATA V2.2.1)
+  existe como schema local **não aplicado**; nenhum job/segmento real, nenhum
+  planner, nenhum executor que chama a Meta, nenhum Cron, nenhum
+  `meta_rate_budget` persistido.
+- **Particionamento de `meta_insights_daily`** — **decidido: não particionar
+  agora** (dados reais do Prod na DATA V2.2A: 531 linhas, 816 kB, 0% dead
+  tuples — ver `docs/HISTORICAL-BACKFILL-PREFLIGHT.md` para os critérios e
+  gatilhos futuros).
 - **Limite histórico** — **não hardcoded**. A regra conceitual é "todo o período
   disponível pela fonte"; o limite real será descoberto/validado pela
   integração, não presumido como constante (nada de "37 meses" no código).
@@ -350,5 +537,10 @@ Scale hardening (condicional).
   (`period_key='custom'` on-demand), **não** tem adapter real (Supabase) —
   só a porta `InsightsReader` documentada — e **não** define nenhum data
   contract de widget/gráfico.
-- **Nenhuma migration.** Nenhum Supabase, Edge Function, Cron, Vault, secret,
-  Meta API ou deploy tocado. Nenhuma mudança visual. Nenhuma mudança numérica.
+- **Backfill Control Plane (DATA V2.2.1)** — migration LOCAL, **não aplicada**
+  em Dev/Prod; nenhum job/segmento real; nenhum planner de datas; nenhum
+  executor/Edge Function que chama a Meta; nenhum Cron.
+- **Nenhuma migration aplicada.** As migrations desta fase (`meta_backfill_*`)
+  existem só como arquivo local. Nenhum Supabase, Edge Function, Cron, Vault,
+  secret, Meta API ou deploy tocado. Nenhuma mudança visual. Nenhuma mudança
+  numérica.

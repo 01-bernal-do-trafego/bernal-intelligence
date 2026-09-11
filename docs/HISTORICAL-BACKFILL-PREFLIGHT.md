@@ -915,11 +915,21 @@ risca desde o início da DATA V2.2 (o backfill nunca aparece em
 **DATA V2.2A — Historical Backfill Preflight: ENCERRADA** após esta aprovação
 e o checkpoint correspondente.
 
+> **Atualização (DATA V2.2.1 — Backfill Control Plane):** o item 1 abaixo foi
+> desenhado e implementado **localmente**: migration
+> `supabase/migrations/20260910120000_meta_backfill_control_plane.sql`
+> (`meta_backfill_jobs`, `meta_backfill_segments`, `claim_next_backfill_segment`,
+> `meta_backfill_release_stale_segments`, view `meta_backfill_progress`) +
+> `lib/backfill/{types,transitions}.ts`. **Não aplicada** em Dev/Prod — sem
+> job/segmento real, sem planner, sem executor. Detalhes em
+> `docs/DATA-FOUNDATION-V2.md` (seção "DATA V2.2.1 — Backfill Control Plane").
+
 **Próxima: DATA V2.2 — Historical Backfill.** Ordem de implementação dentro
 dela (antes de qualquer backfill em volume):
 
-1. schema de `meta_backfill_jobs` + `meta_backfill_segments` (migration
-   aditiva, sem tocar `meta_insights_daily`/`meta_sync_runs`);
+1. ~~schema de `meta_backfill_jobs` + `meta_backfill_segments`~~ — **feito
+   (DATA V2.2.1), migration local, não aplicada** (sem tocar
+   `meta_insights_daily`/`meta_sync_runs`);
 2. executor de segmento (reaproveitando `runClientSync`/`listInsights` do
    `sync-core.ts` com `timeRange` do segmento, não o horizonte operacional);
 3. rate-limit safety (consulta ao budget antes de cada segmento — mesmo que
