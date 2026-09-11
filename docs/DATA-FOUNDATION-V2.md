@@ -958,14 +958,133 @@ segmentos → nunca completa.
 só o retorno `boolean` — o lifecycle do job é resolvido inteiramente pelo
 banco.
 
+## DATA V2.3A — Historical Backfill Rollout (Orchestrator + Runner)
+
+Elimina criar job/segmentos manualmente no SQL Editor. Só intervalo
+EXPLÍCITO (`--from`/`--to`) — discovery/"todo o histórico" é a DATA V2.3B.
+
+### Arquitetura — 3 peças, 1 fonte de verdade de segmentação
+
+```
+NODE/CLI (scripts/backfill/run.ts)
+  → importa lib/backfill/planner.ts#planBackfillSegments (ÚNICA fonte de
+    verdade de segmentação — nenhuma cópia do algoritmo aqui nem no
+    orchestrator)
+  → envia SegmentPlan[] já calculado
+
+EDGE ORCHESTRATOR (supabase/functions/meta-backfill-orchestrator/)
+  → valida a FORMA do payload
+  → materializa job + segmentos ATOMICAMENTE via RPC
+    (create_backfill_job_with_segments — valida a SEMÂNTICA no servidor)
+  → fornece inspect/status
+  → NÃO busca insights Meta, NÃO executa segmento nenhum
+
+EDGE EXECUTOR (supabase/functions/meta-backfill-executor/, V2.2.3 — INTOCADO)
+  → continua executando 1 segmento por invocation, exatamente como antes
+```
+
+### `inspect`
+
+Entrada `{clientId, adAccountRef}`. Valida cliente existe, conta pertence
+ao cliente, `is_linked=true`, `connection_id` existe, `meta_connections.status
+in (active, expiring)` (mesma regra de `meta_eligible_ad_accounts`),
+`has_secret=true` — nunca lê o segredo em si. Devolve `entityCounts`
+(campaign/adset/ad reais, via `count(*)`), `activeJob`/`jobId` (se houver),
+`currentSyncRunning`. O CLI usa `entityCounts` como hint do planner
+existente (`EntityCountHints`) — mesma heurística adaptativa da V2.2.2.
+
+### `create`
+
+Entrada `{clientId, adAccountRef, requestedLevels, targetStartDate,
+targetEndDate, segments}` — `segments` é o `SegmentPlan[]` já calculado
+pelo CLI. A Edge Function só valida a FORMA (level válido, dateFrom/dateTo
+presentes) e chama `create_backfill_job_with_segments` — TODA validação
+semântica (overlap/gap/coverage/conta/job ativo) é responsabilidade da
+RPC, no servidor, que NÃO confia no payload.
+
+### `status`
+
+Entrada `{jobId}`. Reutiliza a view `meta_backfill_progress` (DATA
+V2.2.1) — nenhum contador é recalculado/duplicado. `levels` vem de um
+segundo SELECT em `meta_backfill_jobs.requested_levels` (único campo que
+a view não expõe).
+
+### RPC `create_backfill_job_with_segments` (migration nova, NÃO aplicada)
+
+1 `meta_backfill_job` + N `meta_backfill_segments` na MESMA transação.
+Se qualquer segmento for inválido: exception -> ROLLBACK TOTAL (zero job,
+zero segmentos) — nenhuma exceção capturada ao redor do INSERT dos
+segmentos, então uma falha ali desfaz o job que acabou de ser inserido na
+MESMA chamada. Validação server-side (12 checagens): obrigatórios, faixa
+válida, conta pertence ao cliente e `is_linked`, nenhum job ativo
+duplicado (mais o próprio índice único parcial como rede de segurança
+contra corrida), level de cada segmento pertence a `requested_levels`,
+datas não invertidas, dentro do range alvo, sem duplicata, sem overlap
+(self-join por level), cobertura EXATA sem gap por level solicitado
+(`lag()` + limites batendo com o range alvo). Job criado direto em
+`running` (pronto para `claim_next_backfill_segment`); auto-complete
+(V2.2.4) cuida do fim. **Assinatura preservada, revogada de
+public/anon/authenticated, só `service_role` executa.**
+
+### CLI/Runner (`scripts/backfill/run.ts`, `npm run backfill`)
+
+```
+npm run backfill -- --client-id <uuid> --ad-account-ref <uuid> \
+  --from 2026-08-01 --to 2026-09-10 --levels account,campaign,adset,ad
+```
+
+- **Dry-run é o padrão** (sem `--execute`): `inspect` → planner LOCAL →
+  imprime o plano (contas/período/levels/segmentos por level) → **não
+  cria job, não chama o executor, não chama a Meta**.
+- **`--execute`** (obrigatório para rodar de verdade): inspect → planner →
+  `create` (via orchestrator) → loop chamando o executor **1 segmento por
+  vez**, nunca mais de 1 invocação "em voo".
+- **`--resume <jobId>`**: NÃO cria job novo — só retoma o loop de um job
+  já existente. Ctrl-C não cancela nada (nenhum handler de SIGINT toca o
+  job) — o job fica exatamente como estava, persistido no banco.
+- **Idle**: o executor pode responder `idle` (nada elegível agora) — NÃO
+  é erro. Job `running` → aguarda (delay configurável, default 3s) e
+  tenta de novo; guarda de idle consecutivo (default 10) evita loop
+  infinito; job terminal (`completed/exhausted/cancelled/failed`) → para
+  limpo; job `paused` → para e reporta (não espera indefinidamente por
+  uma pausa manual).
+- **Failure**: existe segmento `failed` → o runner PARA e reporta
+  (comportamento conservador inicial — não tenta calcular
+  `next_retry_at`/esperar; não esconde o erro; um scheduler de retry
+  fica para uma fase futura).
+- **Rate/delay**: delay configurável entre invocações do executor (default
+  3s) — o executor já controla pressão de rate limit página a página; o
+  runner só evita bater com força total. Sem paralelismo entre contas
+  nesta etapa (rollout sequencial).
+- **Dev-only**: `scripts/backfill/dev-guard.ts` recusa qualquer
+  project-ref que não seja o Supabase Dev conhecido, ANTES de qualquer
+  chamada de rede — Prod tem uma mensagem própria (recusado por nome).
+- **Secrets**: só de env (`BACKFILL_ORCHESTRATOR_URL`,
+  `META_BACKFILL_ORCHESTRATOR_SECRET`, `BACKFILL_EXECUTOR_URL`,
+  `META_BACKFILL_EXECUTOR_SECRET`) — nunca aceitos via argumento de CLI,
+  nunca logados.
+
+### O que ainda NÃO faz (V2.3A)
+
+Discovery/"todo o histórico disponível pela fonte" — `--from` é
+obrigatório; sem ele, o runner recusa e explica que é a DATA V2.3B.
+Paralelismo entre contas — rollout sequencial só. Scheduler de retry de
+segmento `failed` — o runner para e reporta, não tenta sozinho. Nenhuma
+migration aplicada, nenhum deploy da nova Edge Function, nenhum secret
+remoto configurado, nenhum job real criado nesta sessão.
+
 ## Próximos blocos (ordem por dependência técnica)
 
 `V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2A` Historical Backfill
 Preflight ✅ · `V2.2.1` Backfill Control Plane ✅ (schema, Dev) ·
 `V2.2.2` Planner + Executor Foundation ✅ (schema, Dev) · `V2.2.3` Real
 Backfill Executor ✅ (piloto real V2.2.3B concluído no Dev) · `V2.2.4`
-Automatic Job Finalization ✅ (migration local, NÃO aplicada) · `V2.3`
-Custom ranges & reach on-demand · `V2.4` Metric catalog expansion · `V2.5`
+Automatic Job Finalization ✅ (migration local, NÃO aplicada) · `V2.3A`
+Historical Backfill Rollout ✅ (orchestrator + runner, migration local NÃO
+aplicada) · `V2.3B` Earliest-Date Discovery + Full History (próximo bloco
+do Backfill — não confundir com o item seguinte) · `V2.3` Custom ranges &
+reach on-demand (trilha SEPARADA, Query Layer — numeração pré-existente,
+mantida) · `V2.4` Metric catalog expansion · `V2.5`
 Dashboard Builder data contract + gráficos novos (backend) · `V2.6` Breakdowns ·
 `V2.7` Account Financial + Alerts · `V2.8` Creative Ranking · `V2.9` Client Goals
 · `V2.10` Instagram Account Insights · `V2.11` Intelligence FACTS layer · `V2.12`
@@ -1018,8 +1137,18 @@ Scale hardening (condicional).
   mudança de trigger/máquina de estados, assinatura pública da RPC
   inalterada, Edge Function não tocada. `exhausted` continua reservado ao
   discovery futuro — não usado por esta regra.
-- **Prod continua intocado por toda a DATA V2** (V2.0 a V2.2.4) — só Dev
-  recebeu as migrations do Control Plane e da Planner + Executor Foundation
-  (e o piloto real V2.2.3B); a migration da V2.2.4 nem no Dev foi aplicada
-  ainda. Nenhum Vault/secret/deploy de Prod tocado. Nenhuma mudança visual.
-  Nenhuma mudança numérica no que já está em produção.
+- **Historical Backfill Rollout (DATA V2.3A)** — orchestrator
+  (`meta-backfill-orchestrator`, inspect/create/status) + runner CLI
+  (`scripts/backfill/run.ts`, `npm run backfill`) construídos e testados
+  com fakes/mocks; RPC `create_backfill_job_with_segments` criada como
+  migration local, **NÃO aplicada** (nem Dev, nem Prod). Nenhum job real
+  criado, nenhuma chamada à Meta, nenhum deploy da nova Edge Function,
+  nenhum secret remoto configurado. Discovery ("todo o histórico") é a
+  DATA V2.3B, ainda não implementada — `--from` é obrigatório, sem
+  exceção.
+- **Prod continua intocado por toda a DATA V2** (V2.0 a V2.3A) — só Dev
+  recebeu as migrations do Control Plane, da Planner + Executor Foundation
+  e o piloto real V2.2.3B; as migrations da V2.2.4 e da V2.3A nem no Dev
+  foram aplicadas ainda. Nenhum Vault/secret/deploy de Prod tocado.
+  Nenhuma mudança visual. Nenhuma mudança numérica no que já está em
+  produção.
