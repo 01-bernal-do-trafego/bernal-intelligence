@@ -1073,6 +1073,181 @@ segmento `failed` — o runner para e reporta, não tenta sozinho. Nenhuma
 migration aplicada, nenhum deploy da nova Edge Function, nenhum secret
 remoto configurado, nenhum job real criado nesta sessão.
 
+## DATA V2.3B — Earliest-Date Discovery + Full Historical Backfill
+
+Permite `npm run backfill -- --all-history` — sem informar `--from`
+manualmente. Nenhuma coluna/tabela nova (auditado: `meta_ad_accounts` não
+guarda `created_time`; a Meta é sempre a fonte ao vivo). Nenhuma migration.
+
+### Meta como fonte de verdade (nunca inventa data)
+
+`earliestDate` é a primeira data em que a **Meta Ads Insights API**
+retorna dado real — nunca a primeira linha no nosso banco, nunca a
+primeira campanha/ad criado localmente, nunca uma constante fixa
+("37 meses" ou qualquer retenção hardcoded). Discovery roda em
+`level=account` (se existe insight em campaign/adset/ad numa data, o
+account level da mesma conta reflete atividade naquela data também) — o
+MESMO range descoberto é depois usado para todos os levels solicitados.
+
+### Limite inferior — `accountCreatedDate`
+
+Auditado: `meta_ad_accounts` **não** guarda `created_time` localmente (só
+`timezone_name`). Sem criar coluna/tabela nova, Discovery busca
+`created_time` **ao vivo** da Graph API (`getAdAccountMeta`, `_shared/
+graph.ts` — `GET /{act_id}?fields=created_time,timezone_name`, 1 único
+objeto, não paginado). A data é a string ISO crua da Meta (já no offset
+local da conta) — nunca reprocessada via `Date`/UTC, evitando qualquer
+deslocamento de dia.
+
+### Limite superior — `latestClosedDate`
+
+O último dia TOTALMENTE fechado no **timezone da conta** — nunca o
+timezone do host, nunca UTC assumido, nunca um timezone fixo (ex.:
+America/Sao_Paulo para todas as contas). Timezone preferencial: a
+resposta AO VIVO da Meta (`timezone_name`, na MESMA chamada de
+`created_time` — nenhum request extra); fallback ao valor local já
+conhecido (`meta_ad_accounts.timezone_name`) só se a Meta omitir.
+`latestClosedDate = addDays(accountToday(timezone), -1)` — reaproveita
+`accountToday`/`addDays`, **extraídos** de `sync-core.ts` para
+`_shared/date-util.ts` nesta etapa (refactor MÍNIMO, comportamento
+IDÊNTICO, guardado por teste — o Current Sync usa exatamente a mesma
+lógica desde a Auto Sync V1, agora só num arquivo compartilhado).
+
+### Algoritmo de discovery (bounded, não escaneia dia a dia)
+
+`discoverEarliestDate` (`lib/backfill/earliest-date-discovery.ts`, Node
+puro/testado; espelho Deno REAL em `_shared/discovery-algorithm.ts`,
+usado pela Edge Function):
+
+1. **Caso feliz — O(log n):** 1 probe do range inteiro
+   (`accountCreatedDate` → `latestClosedDate`). Sem dado → `no_history`
+   (nenhum probe a mais). Com dado → **binary search** pela menor data
+   com dado (predicado monotônico: "existe dado no prefixo
+   `[lowerBound, mid]`?") — ~log2(dias) probes, nunca 1 por dia.
+2. **Fallback (range REJEITADO especificamente, não qualquer erro):**
+   dispara APENAS quando o probe do range inteiro falha com
+   `errorKind: "range_rejected"` — classificado a partir de
+   `GraphApiError.code === 100` ("Invalid parameter", o código real da
+   Meta; ver "Range rejection" abaixo). Nesse caso: varredura em
+   **blocos amplos** (`chunkDays`, default 180 dias / ~6 meses) do mais
+   antigo para o mais novo, até achar o primeiro bloco com dado; só
+   então o binary search roda, limitado a esse bloco. **QUALQUER outro
+   erro** (auth, permissão, rate limit, transient, resposta malformada)
+   **NUNCA** dispara o fallback — vira `probe_error` imediato, com o
+   motivo original preservado (nunca mascarado como "range grande
+   demais").
+3. **Confirmação:** o candidato do binary search é sempre confirmado com
+   1 probe do dia exato antes de virar `found` — se a confirmação falhar
+   (inconsistência), o resultado é `confirmation_failed`, nunca um
+   `found` forçado.
+4. **Guarda `MAX_DISCOVERY_PROBES` (60, documentado):** 1 (range inteiro)
+   + até ~30 blocos (pior caso ~15-20 anos / 180 dias) + ~8 probes de
+   binary search + 1 confirmação ≈ 40, com folga até 60 — nunca
+   excedido; ao atingir o teto, para com `probe_limit_exceeded` (nunca
+   loop infinito). Um probe recusado proativamente por pressão de rate
+   (ver abaixo) também conta contra este teto.
+
+Probe mínimo: `probeAccountInsights` (`_shared/graph.ts`) pede só
+`date_start`, `pageLimit:1` — basta 1 linha para responder "existe
+dado?"; reaproveita `fetchEdgePage` (MESMO cliente HTTP de
+`listEdge`/`listInsightsPage`), nenhuma paginação/normalização própria.
+
+### Range rejection — classificação mínima, sem duplicar o classificador
+
+**MICRO-AUDITORIA (pré-checkpoint):** a versão original acionava o
+fallback chunked para QUALQUER erro no probe do range inteiro — amplo
+demais (um erro de auth ou de rate limit não significa "range rejeitado").
+Corrigido: `GraphApiError` (`_shared/graph.ts`) ganhou um campo NOVO e
+opcional, `code: number | null` (o `error.code` cru da Meta) — sem ampliar
+`GraphErrorKind`/`classifyGraphError` (que continuam com os MESMOS 5
+valores; o executor V2.2.3 e o Current Sync, que só leem `.kind`,
+permanecem intocados e compilam sem mudança — confirmado por `deno check`
++ teste Deno dedicado). Só `meta-backfill-discovery` interpreta
+`code === 100` ("Invalid parameter") como `range_rejected` — a MENOR
+extensão necessária, não um 2º sistema de classificação.
+
+### Rate pressure — respeitada proativamente, não só capturada
+
+**MICRO-AUDITORIA:** capturar `x-app-usage`/`x-ad-account-usage`
+(`captureRateUsage`, automático dentro de `fetchEdgePage`) não bastava —
+faltava uma DECISÃO defensiva antes de continuar disparando probes.
+Corrigido: o `probe` de Discovery agora CHECA a pressão (`canRunDiscoveryNow`,
+mirror local do MESMO limiar conservador de
+`lib/backfill/rate-limit.ts#canRunBackfill` /
+`meta-backfill-executor#canRunBackfillNow` — executor NÃO alterado) ANTES
+de cada chamada real; sob pressão alta, devolve `errorKind: "rate_limited"`
+sem gastar a chamada HTTP. Isso nunca aciona o fallback (só
+`range_rejected` aciona) e ainda conta contra `MAX_DISCOVERY_PROBES` —
+nunca dispara probes sem limite mesmo sob pressão sustentada.
+`resetRateUsage()` roda antes do loop de probes (isolamento desta
+invocação, mesma defesa já aplicada no executor).
+
+### Edge Function `meta-backfill-discovery`
+
+Responsabilidade única: descobrir. NÃO cria job/segment, NÃO escreve
+insight, NÃO executa backfill, NÃO altera Current Sync — **READ-ONLY**
+(nem sequer marca `meta_connections.reauthorization_required` em erro de
+secret/decrypt, diferente do executor — é uma consulta exploratória, sem
+efeito colateral). Auth por secret dedicado
+(`META_BACKFILL_DISCOVERY_SECRET`, `x-meta-backfill-discovery-secret`,
+timing-safe, sem fallback, 401, `--no-verify-jwt` documentado, sem
+`config.toml`). Connection safety via `resolveEligibleAccount`
+(`_shared/backfill-eligibility.ts`, NOVO helper compartilhado — mesma
+regra de `meta_eligible_ad_accounts`/já usada no executor/orchestrator,
+extraída para o CÓDIGO NOVO não duplicar; orchestrator/executor já
+aprovados/checkpointed NÃO foram retrofitados, decisão deliberada para
+não reabrir revisão de código já fechado). Token nunca retornado/logado.
+
+### `--all-history` no runner
+
+Mutuamente exclusivo com `--from`/`--to` (`cli-args.ts`) — nenhum dos
+dois quebra o outro modo. Sem nenhum dos dois: recusa, nunca inventa
+data. Fluxo: `discovery` → `inspect` → planner (mesmo
+`planBackfillSegments`, literal) → resumo do plano → (dry-run: para aqui;
+execute: `create` → loop V2.3A, sem mudança nenhuma no loop/executor).
+
+**Dry-run com `--all-history`**: mensagem final é **"Discovery consultou
+a Meta. Nenhum job foi criado. Nenhum segmento de backfill foi
+executado."** — nunca "nenhuma chamada Meta" (Discovery de fato chamou a
+Meta; só nenhum job/segmento foi criado/executado).
+
+**`no_history`**: runner informa claramente e encerra sem criar job — em
+dry-run OU execute (ambos, a decisão é a mesma: sem histórico, não há o
+que planejar).
+
+**`--resume`**: inalterado — nunca roda discovery, nunca cria job novo,
+só retoma o loop de um job já existente (guardado por teste).
+
+### `MAX_PLANNED_SEGMENTS` (2000, documentado)
+
+Full history pode gerar muitos segmentos. Justificativa
+(`scripts/backfill/segment-limits.ts`, a partir dos block sizes reais de
+`lib/backfill/block-size.ts`): pior caso plausível — conta GRANDE (bloco
+MÍNIMO de cada faixa) com ~20 anos de histórico, todos os 4 levels ≈ 2207
+segmentos. `2000` fica deliberadamente um pouco abaixo desse teto
+extremo — não é "tecnicamente impossível passar disso", é "acima disso,
+um humano deve confirmar deliberadamente" (ex.: rodar por level
+separado). Dry-run acima do limite só AVISA (nada é criado de qualquer
+forma); `--execute` acima do limite **ABORTA antes de `create`** — zero
+job criado.
+
+### Dev-only
+
+Mesma guarda de V2.3A (`assertDevProjectRef`) — agora também aplicada à
+URL de discovery, sempre ANTES de qualquer chamada de rede. Prod
+(`bmtzurlsohinqbjxcpje`) recusado por nome; só
+`vqodysgxdkkvmfqyprpu` (Dev) é aceito.
+
+### O que ainda NÃO faz (V2.3B)
+
+Nenhuma migration nova (nenhuma coluna/tabela criada — `created_time` é
+sempre buscado ao vivo). Nenhum deploy da nova Edge Function. Nenhum
+secret remoto configurado. Nenhuma chamada `--all-history` real nesta
+sessão. `Current Sync` inalterado (a extração de `date-util.ts` é
+comportamento idêntico, guardada por teste) — coordenação V2.2.2 continua
+protegendo concorrência; Discovery é read-only em relação a insights, não
+compete por nenhum lock.
+
 ## Próximos blocos (ordem por dependência técnica)
 
 `V2.1` Query Layer ✅ (paralelo, opt-in) · `V2.2A` Historical Backfill
@@ -1081,10 +1256,11 @@ Preflight ✅ · `V2.2.1` Backfill Control Plane ✅ (schema, Dev) ·
 Backfill Executor ✅ (piloto real V2.2.3B concluído no Dev) · `V2.2.4`
 Automatic Job Finalization ✅ (migration local, NÃO aplicada) · `V2.3A`
 Historical Backfill Rollout ✅ (orchestrator + runner, migration local NÃO
-aplicada) · `V2.3B` Earliest-Date Discovery + Full History (próximo bloco
-do Backfill — não confundir com o item seguinte) · `V2.3` Custom ranges &
-reach on-demand (trilha SEPARADA, Query Layer — numeração pré-existente,
-mantida) · `V2.4` Metric catalog expansion · `V2.5`
+aplicada) · `V2.3B` Earliest-Date Discovery + Full History ✅ (discovery
+Edge Function + `--all-history`, nenhuma migration, DEV ONLY, `--all-history`
+real NÃO executado) · `V2.3` Custom ranges & reach on-demand (trilha
+SEPARADA, Query Layer — numeração pré-existente, mantida) · `V2.4` Metric
+catalog expansion · `V2.5`
 Dashboard Builder data contract + gráficos novos (backend) · `V2.6` Breakdowns ·
 `V2.7` Account Financial + Alerts · `V2.8` Creative Ranking · `V2.9` Client Goals
 · `V2.10` Instagram Account Insights · `V2.11` Intelligence FACTS layer · `V2.12`
@@ -1140,15 +1316,25 @@ Scale hardening (condicional).
 - **Historical Backfill Rollout (DATA V2.3A)** — orchestrator
   (`meta-backfill-orchestrator`, inspect/create/status) + runner CLI
   (`scripts/backfill/run.ts`, `npm run backfill`) construídos e testados
-  com fakes/mocks; RPC `create_backfill_job_with_segments` criada como
-  migration local, **NÃO aplicada** (nem Dev, nem Prod). Nenhum job real
-  criado, nenhuma chamada à Meta, nenhum deploy da nova Edge Function,
-  nenhum secret remoto configurado. Discovery ("todo o histórico") é a
-  DATA V2.3B, ainda não implementada — `--from` é obrigatório, sem
-  exceção.
-- **Prod continua intocado por toda a DATA V2** (V2.0 a V2.3A) — só Dev
-  recebeu as migrations do Control Plane, da Planner + Executor Foundation
-  e o piloto real V2.2.3B; as migrations da V2.2.4 e da V2.3A nem no Dev
-  foram aplicadas ainda. Nenhum Vault/secret/deploy de Prod tocado.
-  Nenhuma mudança visual. Nenhuma mudança numérica no que já está em
-  produção.
+  com fakes/mocks nesta sessão; **validada REALMENTE no Supabase Dev**
+  fora desta sessão (2 jobs automáticos completos: `57fc5be7-08df-4980-
+  bcbb-4f29d5fd9041` account+campaign, `003bc986-178b-4b4a-90b1-
+  42a53d2e1c4f` adset+ad, ambos `2026-09-04→2026-09-10`, `completed`, sem
+  erro, sem lease residual). Discovery ("todo o histórico") era a DATA
+  V2.3B — agora implementada (ver seção acima) — `--all-history` real
+  ainda NÃO executado.
+- **Earliest-Date Discovery + Full History (DATA V2.3B)** — Edge Function
+  `meta-backfill-discovery` (read-only, Meta como fonte de verdade,
+  bounded/logarítmico) + `--all-history` no runner construídos e testados
+  com fakes/mocks/Deno test; nenhuma migration (nenhuma coluna/tabela
+  nova); `--all-history` real **NÃO executado** nesta sessão; nenhum
+  deploy, nenhum secret remoto configurado.
+- **Prod continua intocado por toda a DATA V2** (V2.0 a V2.3B) — Dev
+  recebeu as migrations do Control Plane, da Planner + Executor
+  Foundation, do Auto-Complete (V2.2.4) e da materialização atômica
+  (V2.3A) — confirmado pelos 2 jobs reais do piloto V2.3A-B
+  (`57fc5be7-...`, `003bc986-...`), ambos finalizados automaticamente
+  (`completed`) sem intervenção manual. A migration da V2.3B (Discovery)
+  **não existe** — não há schema novo nesta etapa, nada a aplicar. Nenhum
+  Vault/secret/deploy de Prod tocado. Nenhuma mudança visual. Nenhuma
+  mudança numérica no que já está em produção.

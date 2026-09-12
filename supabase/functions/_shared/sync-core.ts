@@ -18,6 +18,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { openToken } from "./crypto.ts";
+import { accountToday, addDays, isoDate } from "./date-util.ts";
 import {
   GraphApiError,
   GraphPaginationOverflow,
@@ -73,22 +74,6 @@ function ts(v: unknown): string | null {
 function s(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;
 }
-const isoDate = (d: Date) => d.toISOString().slice(0, 10);
-const addDays = (base: string, n: number) => {
-  const d = new Date(`${base}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + n);
-  return isoDate(d);
-};
-
-function accountToday(timezoneName: string | null): string {
-  const tz = timezoneName || "UTC";
-  try {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: tz }).format(new Date());
-  } catch {
-    return isoDate(new Date());
-  }
-}
-
 function dailyHorizon(today: string): { from: string; to: string } {
   const minus30 = addDays(today, -30);
   const [yy, mm] = today.split("-").map(Number);

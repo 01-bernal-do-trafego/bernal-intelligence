@@ -204,10 +204,30 @@ export function classifyGraphError(body: unknown): GraphErrorKind {
 
 export class GraphApiError extends Error {
   kind: GraphErrorKind;
-  constructor(kind: GraphErrorKind) {
+  /**
+   * Código numérico CRU do erro da Meta (`error.code`), quando disponível.
+   * NÃO amplia `GraphErrorKind` (o executor V2.2.3 e o Current Sync
+   * continuam só lendo `.kind`, intocados) — existe só para diagnóstico
+   * fino de quem precisar de mais granularidade que os 5 valores de
+   * `GraphErrorKind` (hoje: só `meta-backfill-discovery`, DATA V2.3B,
+   * distinguindo "range/parâmetro rejeitado" — code 100 — de outros
+   * `unknown`, sem inventar uma 6ª categoria na classificação compartilhada).
+   */
+  code: number | null;
+  constructor(kind: GraphErrorKind, code: number | null = null) {
     super(`graph_error:${kind}`);
     this.kind = kind;
+    this.code = code;
   }
+}
+
+/** Extrai `error.code` cru do corpo de erro da Meta, se houver. Mesmo parsing defensivo de `classifyGraphError` — nunca lança. */
+function extractGraphErrorCode(body: unknown): number | null {
+  if (typeof body !== "object" || body === null) return null;
+  const err = (body as Record<string, unknown>).error;
+  if (typeof err !== "object" || err === null) return null;
+  const code = (err as Record<string, unknown>).code;
+  return typeof code === "number" ? code : null;
 }
 
 const AD_ACCOUNT_FIELDS =
@@ -251,7 +271,7 @@ export async function listAdAccounts(
       | null;
 
     if (!res.ok || !body) {
-      throw new GraphApiError(classifyGraphError(body));
+      throw new GraphApiError(classifyGraphError(body), extractGraphErrorCode(body));
     }
 
     pages.push(Array.isArray(body.data) ? body.data : []);
@@ -318,7 +338,7 @@ async function fetchEdgePage(
     | null;
 
   if (!res.ok || !body) {
-    throw new GraphApiError(classifyGraphError(body));
+    throw new GraphApiError(classifyGraphError(body), extractGraphErrorCode(body));
   }
   const rows = Array.isArray(body.data) ? body.data : [];
 
@@ -567,4 +587,69 @@ export async function listInsightsPage(
     pageLimit: input.pageLimit,
     after: input.cursor,
   });
+}
+
+// ---------------------------------------------------------------------------
+// DATA V2.3B — Earliest-Date Discovery: metadata da conta + probe de existência
+// ---------------------------------------------------------------------------
+
+const AD_ACCOUNT_META_FIELDS = "created_time,timezone_name";
+
+export interface AdAccountMeta {
+  /** ISO 8601 CRU da Meta (já no offset local da conta) — NÃO reprocessar via Date/UTC; usar a data como string. `null` se a Meta não devolver. */
+  createdTime: string | null;
+  /** IANA (ex.: "America/Sao_Paulo"). `null` se a Meta não devolver. */
+  timezoneName: string | null;
+}
+
+/**
+ * `GET /{act_id}?fields=created_time,timezone_name` — 1 único objeto, não
+ * paginado. Usado só pelo Discovery (V2.3B) para resolver o limite inferior
+ * (criação da conta) e o timezone sem inventar/assumir nada. Reaproveita
+ * `classifyGraphError`/`captureRateUsage` — mesmo tratamento de erro/rate
+ * usage do resto do arquivo.
+ */
+export async function getAdAccountMeta(
+  input: GraphConfig & { token: string; adAccountId: string },
+): Promise<AdAccountMeta> {
+  const endpoint = `${input.graphBase.replace(/\/+$/, "")}/${input.version}/${input.adAccountId}`;
+  const url = new URL(endpoint);
+  url.searchParams.set("fields", AD_ACCOUNT_META_FIELDS);
+
+  const res = await fetch(url, { method: "GET", headers: { Authorization: `Bearer ${input.token}` } });
+  captureRateUsage(res.headers);
+  const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
+
+  if (!res.ok || !body) {
+    throw new GraphApiError(classifyGraphError(body), extractGraphErrorCode(body));
+  }
+  return {
+    createdTime: typeof body.created_time === "string" ? body.created_time : null,
+    timezoneName: typeof body.timezone_name === "string" ? body.timezone_name : null,
+  };
+}
+
+/** Campo mínimo suficiente pra detectar EXISTÊNCIA de dado — não precisa do conjunto completo de `insightFields()`. */
+const DISCOVERY_PROBE_FIELDS = "date_start";
+
+/**
+ * 1 probe de "existe ALGUM dado neste range?" em `level=account` — NUNCA
+ * paginação (basta 1 linha pra responder sim). Reaproveita `fetchEdgePage`
+ * (MESMO cliente HTTP de `listEdge`/`listInsightsPage`) — nenhum request
+ * paralelo, nenhuma lógica de paginação duplicada.
+ */
+export async function probeAccountInsights(
+  input: GraphConfig & { token: string; adAccountId: string; since: string; until: string },
+): Promise<{ hasData: boolean }> {
+  const page = await fetchEdgePage({
+    graphBase: input.graphBase,
+    version: input.version,
+    token: input.token,
+    path: `${input.adAccountId}/insights`,
+    fields: DISCOVERY_PROBE_FIELDS,
+    params: { level: "account", time_range: JSON.stringify({ since: input.since, until: input.until }) },
+    pageLimit: 1,
+    after: null,
+  });
+  return { hasData: page.rows.length > 0 };
 }

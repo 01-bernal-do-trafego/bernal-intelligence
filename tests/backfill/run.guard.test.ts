@@ -32,10 +32,19 @@ describe("Ctrl-C não cancela job — nenhum handler de SIGINT toca o job", () =
 });
 
 describe("secrets nunca aceitos via argumento de CLI", () => {
-  it("cli-args.ts só reconhece os flags documentados (client-id, ad-account-ref, from, to, levels, execute, resume) — nenhum flag de secret", () => {
+  it("cli-args.ts só reconhece os flags documentados (client-id, ad-account-ref, from, to, levels, execute, resume, all-history) — nenhum flag de secret", () => {
     const flags = [...cliArgsSrc.matchAll(/getFlagValue\(argv, "(--[\w-]+)"\)|hasFlag\(argv, "(--[\w-]+)"\)/g)]
       .map((m) => m[1] ?? m[2]);
-    const allowed = new Set(["--resume", "--client-id", "--ad-account-ref", "--from", "--to", "--levels", "--execute"]);
+    const allowed = new Set([
+      "--resume",
+      "--client-id",
+      "--ad-account-ref",
+      "--from",
+      "--to",
+      "--levels",
+      "--execute",
+      "--all-history",
+    ]);
     for (const flag of flags) {
       expect(allowed.has(flag), `flag inesperado em cli-args.ts: ${flag}`).toBe(true);
     }
@@ -59,7 +68,42 @@ describe("secrets nunca logados — nenhuma chamada log()/console.log inclui as 
 
 describe("dry-run é o padrão de segurança — --execute precisa ser explícito", () => {
   it('mode default é "dry-run", só vira "execute" com hasFlag(argv, "--execute")', () => {
-    expect(cliArgsSrc).toMatch(/mode:\s*hasFlag\(argv, "--execute"\)\s*\?\s*"execute"\s*:\s*"dry-run"/);
+    expect(cliArgsSrc).toMatch(/const mode = hasFlag\(argv, "--execute"\) \? "execute" : "dry-run"/);
+  });
+});
+
+describe("--all-history e --from/--to são mutuamente exclusivos (guarda estática)", () => {
+  it("cli-args.ts lança CliArgsError quando allHistory && (from || to)", () => {
+    expect(cliArgsSrc).toMatch(/if \(allHistory && \(from \|\| to\)\) \{\s*\n?\s*throw new CliArgsError/);
+  });
+  it("--resume NÃO passa por nenhuma checagem de rangeMode/discovery — retorna antes", () => {
+    const resumeIdx = cliArgsSrc.indexOf("if (resumeJobId)");
+    const allHistoryCheckIdx = cliArgsSrc.indexOf("if (allHistory && (from || to))");
+    expect(resumeIdx).toBeLessThan(allHistoryCheckIdx);
+    const resumeBlock = cliArgsSrc.slice(resumeIdx, resumeIdx + 150);
+    expect(resumeBlock).toMatch(/return \{ mode: "resume", jobId: resumeJobId \}/);
+  });
+});
+
+describe("resume nunca chama discovery em run.ts (retorna cedo)", () => {
+  it('o branch de resume (mode === "resume") não menciona discoverAccountHistory/requireDiscoveryEnv', () => {
+    const resumeIdx = runSrc.indexOf('if (args.mode === "resume")');
+    const resumeBlockEnd = runSrc.indexOf("}", runSrc.indexOf("return 0;", resumeIdx));
+    const resumeBlock = runSrc.slice(resumeIdx, resumeBlockEnd);
+    expect(resumeBlock).not.toContain("discoverAccountHistory");
+    expect(resumeBlock).not.toContain("requireDiscoveryEnv");
+  });
+});
+
+describe("MAX_PLANNED_SEGMENTS — importado do módulo dedicado, não um número mágico solto em run.ts", () => {
+  it("run.ts importa MAX_PLANNED_SEGMENTS/exceedsMaxPlannedSegments de ./segment-limits", () => {
+    expect(runSrc).toMatch(/import\s*\{\s*MAX_PLANNED_SEGMENTS,\s*exceedsMaxPlannedSegments\s*\}\s*from\s*["']\.\/segment-limits["']/);
+  });
+  it("a checagem de --execute usa exceedsMaxPlannedSegments antes de createJob", () => {
+    const overLimitIdx = runSrc.indexOf("if (overLimit) {");
+    const createJobIdx = runSrc.indexOf("await deps.createJob(");
+    expect(overLimitIdx).toBeGreaterThan(-1);
+    expect(overLimitIdx).toBeLessThan(createJobIdx);
   });
 });
 
