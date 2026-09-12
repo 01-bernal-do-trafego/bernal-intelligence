@@ -132,24 +132,30 @@ describe("MAX_DISCOVERY_PROBES", () => {
   });
 });
 
-describe("range rejection — SÓ code 100 (Invalid parameter) vira range_rejected; nenhuma outra heurística nova", () => {
+describe("range rejection — SÓ isRangeRejectedGraphError (code 100 + evidência textual) vira range_rejected; nenhuma outra heurística local", () => {
   function probeBlock(): string {
     const idx = src.indexOf("const probe: ProbeFn = async (range) => {");
     const end = src.indexOf("const outcome = await discoverEarliestDate(");
     return src.slice(idx, end);
   }
-  it("RANGE_REJECTION_CODE é 100, comentado como o código real da Meta (não inventado)", () => {
-    expect(src).toMatch(/const RANGE_REJECTION_CODE = 100;/);
+  it("importa isRangeRejectedGraphError de _shared/graph.ts — não reimplementa o predicado localmente", () => {
+    expect(src).toContain("isRangeRejectedGraphError");
+    const importIdx = src.indexOf('from "../_shared/graph.ts"');
+    expect(importIdx).toBeGreaterThan(-1);
   });
-  it("o probe só classifica range_rejected quando err.code === RANGE_REJECTION_CODE — nunca por .kind sozinho", () => {
+  it("NÃO define um número mágico local (RANGE_REJECTION_CODE) — a regra vive só em graph.ts", () => {
+    expect(code).not.toMatch(/const RANGE_REJECTION_CODE/);
+    expect(code).not.toMatch(/err\.code\s*===\s*100/);
+  });
+  it("o probe só classifica range_rejected quando isRangeRejectedGraphError(err.details) — nunca por .kind/.code sozinho", () => {
     const block = probeBlock();
-    expect(block).toMatch(/if \(err\.code === RANGE_REJECTION_CODE\) \{\s*\n?\s*return \{ hasData: false, errorKind: "range_rejected" \};/);
+    expect(block).toMatch(/if \(isRangeRejectedGraphError\(err\.details\)\) \{\s*\n?\s*return \{ hasData: false, errorKind: "range_rejected" \};/);
   });
-  it("qualquer OUTRO GraphApiError (kind != range) passa err.kind adiante, sem reclassificar", () => {
+  it("qualquer OUTRO GraphApiError (predicado falso) passa err.kind adiante, sem reclassificar", () => {
     const block = probeBlock();
     expect(block).toMatch(/return \{ hasData: false, errorKind: err\.kind \};/);
   });
-  it("classifyGraphError NÃO foi ampliado/importado aqui para produzir 'range_rejected' (usa .code, não uma 6ª categoria em GraphErrorKind)", () => {
+  it("classifyGraphError NÃO foi ampliado/importado aqui para produzir 'range_rejected' (a decisão é de isRangeRejectedGraphError, não uma 6ª categoria em GraphErrorKind)", () => {
     expect(code).not.toContain("classifyGraphError");
   });
 });

@@ -41,22 +41,27 @@
  *     cliente HTTP (`fetchEdgePage`) do Current Sync/Backfill.
  *   - `classifyGraphError`/`GraphApiError` (`_shared/graph.ts`) — mesma
  *     classificação de erro, nenhuma heurística nova (a única exceção é
- *     `GraphApiError.code === 100` — ver "RANGE REJECTION" abaixo).
+ *     `isRangeRejectedGraphError` — ver "RANGE REJECTION" abaixo).
  *   - `openToken` (`_shared/crypto.ts`) — mesma descriptografia.
  *   - `accountToday`/`addDays` (`_shared/date-util.ts`, extraído de
  *     `sync-core.ts` nesta etapa) — mesmo cálculo de "hoje"/"ontem" no
  *     timezone da conta que o Current Sync já usa.
  *
- * RANGE REJECTION (MICRO-AUDITORIA pré-checkpoint): o fallback chunked do
+ * RANGE REJECTION (MICRO-AUDITORIA V2.3B.1): o fallback chunked do
  * algoritmo (`discoverEarliestDate`) só é acionado quando o probe do range
  * inteiro devolve `errorKind: "range_rejected"` — SÓ este arquivo decide
- * quando isso é verdade, a partir de `GraphApiError.code === 100`
- * ("Invalid parameter", o código real da Meta para parâmetro/formato de
- * request inválido). `GraphErrorKind`/`classifyGraphError` continuam com os
- * MESMOS 5 valores de sempre (o executor V2.2.3 não muda) — `code` é um
- * campo NOVO e opcional de `GraphApiError`, só lido aqui. Qualquer outro
- * erro (auth, permissão, rate limit, transient, resposta malformada) NUNCA
- * vira `range_rejected` — passa como está (`err.kind`), o algoritmo falha
+ * quando isso é verdade, via `isRangeRejectedGraphError` (`_shared/
+ * graph.ts`). `error.code === 100` ("Invalid parameter") sozinho NÃO
+ * basta — é genérico demais (field/level/breakdown inválido também usam
+ * esse código); também exige evidência TEXTUAL nas mensagens da Meta
+ * (`message`/`error_user_title`/`error_user_msg`, já sanitizadas) de que a
+ * rejeição é sobre `time_range`/período. Sem essa evidência: `false`,
+ * nunca `range_rejected`. `GraphErrorKind`/`classifyGraphError` continuam
+ * com os MESMOS 5 valores de sempre (o executor V2.2.3 não muda) —
+ * `GraphErrorDetails` é um campo NOVO e opcional de `GraphApiError`, só
+ * lido aqui. Qualquer outro erro (auth, permissão, rate limit, transient,
+ * resposta malformada, OU code 100 sem evidência de range) NUNCA vira
+ * `range_rejected` — passa como está (`err.kind`), o algoritmo falha
  * explicitamente com esse motivo, sem tentar blocos.
  *
  * RATE PRESSURE: além de capturar `x-app-usage`/`x-ad-account-usage`
@@ -87,6 +92,7 @@ import {
   GraphApiError,
   getAdAccountMeta,
   getRateUsage,
+  isRangeRejectedGraphError,
   probeAccountInsights,
   resetRateUsage,
 } from "../_shared/graph.ts";
@@ -99,9 +105,6 @@ type AnyClient = any;
 
 const GRAPH_BASE = Deno.env.get("META_GRAPH_BASE") ?? "https://graph.facebook.com";
 const GRAPH_VERSION = Deno.env.get("META_GRAPH_VERSION") ?? "v26.0";
-
-/** Código real da Meta para "Invalid parameter" — usado aqui SÓ para reconhecer um range/parâmetro rejeitado (ver comentário do topo do arquivo). */
-const RANGE_REJECTION_CODE = 100;
 
 /**
  * Mesmo limiar conservador de `lib/backfill/rate-limit.ts#canRunBackfill` /
@@ -227,7 +230,12 @@ Deno.serve(async (req: Request) => {
       return { hasData: r.hasData };
     } catch (err) {
       if (err instanceof GraphApiError) {
-        if (err.code === RANGE_REJECTION_CODE) {
+        // MICRO-AUDITORIA (V2.3B.1): code 100 sozinho NÃO é suficiente —
+        // isRangeRejectedGraphError exige TAMBÉM evidência textual de que a
+        // rejeição é sobre time_range/período (ver graph.ts). Sem essa
+        // evidência, cai no `err.kind` normal (quase sempre "unknown" para
+        // code 100 genérico) -> probe_error, NUNCA fallback incorreto.
+        if (isRangeRejectedGraphError(err.details)) {
           return { hasData: false, errorKind: "range_rejected" };
         }
         return { hasData: false, errorKind: err.kind };

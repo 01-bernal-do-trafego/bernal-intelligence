@@ -202,32 +202,112 @@ export function classifyGraphError(body: unknown): GraphErrorKind {
   return "unknown";
 }
 
+/**
+ * Campos CRUS do erro da Meta que a Graph API realmente devolve, ALÉM dos 2
+ * que `classifyGraphError` já usa (`code`/`error_subcode`). `message`/
+ * `userTitle`/`userMessage` são SANITIZADOS (mesma `sanitizeMetaMessage` já
+ * usada em `buildSanitizedExchangeError` — trunca a 200 chars, redige
+ * qualquer substring parecida com token) — nunca o texto bruto da Meta,
+ * nunca token/request sensível.
+ */
+export interface GraphErrorDetails {
+  code: number | null;
+  subcode: number | null;
+  type: string | null;
+  message: string | null;
+  userTitle: string | null;
+  userMessage: string | null;
+}
+
+const EMPTY_GRAPH_ERROR_DETAILS: GraphErrorDetails = {
+  code: null,
+  subcode: null,
+  type: null,
+  message: null,
+  userTitle: null,
+  userMessage: null,
+};
+
 export class GraphApiError extends Error {
   kind: GraphErrorKind;
   /**
-   * Código numérico CRU do erro da Meta (`error.code`), quando disponível.
-   * NÃO amplia `GraphErrorKind` (o executor V2.2.3 e o Current Sync
-   * continuam só lendo `.kind`, intocados) — existe só para diagnóstico
-   * fino de quem precisar de mais granularidade que os 5 valores de
-   * `GraphErrorKind` (hoje: só `meta-backfill-discovery`, DATA V2.3B,
-   * distinguindo "range/parâmetro rejeitado" — code 100 — de outros
-   * `unknown`, sem inventar uma 6ª categoria na classificação compartilhada).
+   * Detalhes CRUS (sanitizados) do erro da Meta, quando disponíveis. NÃO
+   * amplia `GraphErrorKind` (o executor V2.2.3 e o Current Sync continuam
+   * só lendo `.kind`, intocados) — existe só para diagnóstico fino de quem
+   * precisar de mais granularidade que os 5 valores de `GraphErrorKind`
+   * (hoje: só `meta-backfill-discovery`, DATA V2.3B, via
+   * `isRangeRejectedGraphError` — nunca inventa uma 6ª categoria na
+   * classificação compartilhada).
    */
-  code: number | null;
-  constructor(kind: GraphErrorKind, code: number | null = null) {
+  details: GraphErrorDetails;
+  constructor(kind: GraphErrorKind, details: GraphErrorDetails = EMPTY_GRAPH_ERROR_DETAILS) {
     super(`graph_error:${kind}`);
     this.kind = kind;
-    this.code = code;
+    this.details = details;
   }
 }
 
-/** Extrai `error.code` cru do corpo de erro da Meta, se houver. Mesmo parsing defensivo de `classifyGraphError` — nunca lança. */
-function extractGraphErrorCode(body: unknown): number | null {
-  if (typeof body !== "object" || body === null) return null;
+/** Extrai os campos crus (sanitizados) do erro da Meta. Mesmo parsing defensivo de `classifyGraphError` — nunca lança. Exportada para ser testável diretamente (ver `graph.test.ts`). */
+export function extractGraphErrorDetails(body: unknown): GraphErrorDetails {
+  if (typeof body !== "object" || body === null) return EMPTY_GRAPH_ERROR_DETAILS;
   const err = (body as Record<string, unknown>).error;
-  if (typeof err !== "object" || err === null) return null;
-  const code = (err as Record<string, unknown>).code;
-  return typeof code === "number" ? code : null;
+  if (typeof err !== "object" || err === null) return EMPTY_GRAPH_ERROR_DETAILS;
+  const e = err as Record<string, unknown>;
+  const msg = sanitizeMetaMessage(e.message);
+  const title = sanitizeMetaMessage(e.error_user_title);
+  const userMsg = sanitizeMetaMessage(e.error_user_msg);
+  return {
+    code: typeof e.code === "number" ? e.code : null,
+    subcode: typeof e.error_subcode === "number" ? e.error_subcode : null,
+    type: typeof e.type === "string" ? e.type : null,
+    message: msg.length > 0 ? msg : null,
+    userTitle: title.length > 0 ? title : null,
+    userMessage: userMsg.length > 0 ? userMsg : null,
+  };
+}
+
+/**
+ * MICRO-AUDITORIA (V2.3B.1): `error.code === 100` ("Invalid parameter")
+ * sozinho NÃO é suficiente para classificar `range_rejected` — é um código
+ * GENÉRICO que a Meta usa para field inválido, level inválido, breakdown
+ * inválido, parâmetro desconhecido, etc., nada relacionado a range de
+ * datas. `code === 100` é NECESSÁRIO mas nunca SUFICIENTE aqui: também
+ * exige evidência TEXTUAL nas mensagens (`message`/`error_user_title`/
+ * `error_user_msg`, já sanitizadas) de que a rejeição é sobre
+ * `time_range`/período — um vocabulário de palavras-chave ESPECÍFICO o
+ * bastante para não confundir com "since"/"until" aparecendo por acaso em
+ * mensagens sobre outra coisa (por isso não são keywords soltas, só frases
+ * compostas). Nenhum `error_subcode` específico e confiável para isto é
+ * documentado publicamente pela Meta hoje — se um for confirmado num piloto
+ * real futuro, adicione aqui em vez de inventar um agora.
+ *
+ * SEM evidência textual -> `false` (nunca `range_rejected`) — "melhor
+ * falhar como probe_error do que gerar fallback incorreto".
+ */
+const RANGE_REJECTION_CODE = 100;
+const RANGE_REJECTION_KEYWORDS = [
+  "time_range",
+  "time range",
+  "date range",
+  "date_preset",
+  "date window",
+  "too many days",
+  "too large",
+  "too big",
+  "exceeds the maximum",
+  "invalid time range",
+  "range is invalid",
+  "range is too",
+] as const;
+
+export function isRangeRejectedGraphError(details: GraphErrorDetails): boolean {
+  if (details.code !== RANGE_REJECTION_CODE) return false;
+  const haystack = [details.message, details.userTitle, details.userMessage]
+    .filter((s): s is string => typeof s === "string" && s.length > 0)
+    .join(" ")
+    .toLowerCase();
+  if (haystack.length === 0) return false; // code 100 sem message/subcode útil -> sem evidência.
+  return RANGE_REJECTION_KEYWORDS.some((kw) => haystack.includes(kw));
 }
 
 const AD_ACCOUNT_FIELDS =
@@ -271,7 +351,7 @@ export async function listAdAccounts(
       | null;
 
     if (!res.ok || !body) {
-      throw new GraphApiError(classifyGraphError(body), extractGraphErrorCode(body));
+      throw new GraphApiError(classifyGraphError(body), extractGraphErrorDetails(body));
     }
 
     pages.push(Array.isArray(body.data) ? body.data : []);
@@ -338,7 +418,7 @@ async function fetchEdgePage(
     | null;
 
   if (!res.ok || !body) {
-    throw new GraphApiError(classifyGraphError(body), extractGraphErrorCode(body));
+    throw new GraphApiError(classifyGraphError(body), extractGraphErrorDetails(body));
   }
   const rows = Array.isArray(body.data) ? body.data : [];
 
@@ -621,7 +701,7 @@ export async function getAdAccountMeta(
   const body = (await res.json().catch(() => null)) as Record<string, unknown> | null;
 
   if (!res.ok || !body) {
-    throw new GraphApiError(classifyGraphError(body), extractGraphErrorCode(body));
+    throw new GraphApiError(classifyGraphError(body), extractGraphErrorDetails(body));
   }
   return {
     createdTime: typeof body.created_time === "string" ? body.created_time : null,
