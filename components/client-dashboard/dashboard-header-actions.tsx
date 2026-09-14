@@ -1,30 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, MoreHorizontal, Pencil, Share2 } from "lucide-react";
+import { Check, MoreHorizontal, Pencil } from "lucide-react";
 import type { DashboardConfigValue } from "@/lib/dashboard-config";
 import { Button } from "@/components/ui/button";
 import { Dropdown, DropdownItem } from "@/components/ui/dropdown";
 import { Modal } from "@/components/ui/modal";
 import { DashboardEditor } from "./dashboard-editor";
+import { ShareLinkModal } from "./share-link-modal";
 
-type PlaceholderKey = "share" | "export" | "duplicate";
+type PlaceholderKey = "export" | "duplicate";
 
 const PLACEHOLDER: Record<
   PlaceholderKey,
   { title: string; intro: string; items: string[] }
 > = {
-  share: {
-    title: "Compartilhar dashboard",
-    intro:
-      "O dashboard compartilhável do cliente ainda não está ativo. Futuramente será possível:",
-    items: [
-      "gerar um link individual para o cliente",
-      "ativar e desativar o link a qualquer momento",
-      "escolher acesso público ou protegido",
-      "definir senha ou login para o acesso protegido",
-    ],
-  },
   export: {
     title: "Exportar PDF",
     intro: "A exportação do dashboard em PDF entra em uma fase futura.",
@@ -41,11 +31,13 @@ const PLACEHOLDER: Record<
 interface DashboardHeaderActionsProps {
   clientId: string;
   config: DashboardConfigValue;
+  shareLinkActive: boolean;
 }
 
 export function DashboardHeaderActions({
   clientId,
   config,
+  shareLinkActive,
 }: DashboardHeaderActionsProps) {
   const [editorOpen, setEditorOpen] = useState(false);
   const [placeholder, setPlaceholder] = useState<PlaceholderKey | null>(null);
@@ -76,14 +68,7 @@ export function DashboardHeaderActions({
           <Pencil className="size-3.5" />
           Editar dashboard
         </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onClick={() => setPlaceholder("share")}
-        >
-          <Share2 className="size-3.5" />
-          Compartilhar
-        </Button>
+        <ShareLinkModal clientId={clientId} initialActive={shareLinkActive} />
         <Dropdown
           align="end"
           trigger={
