@@ -7,7 +7,7 @@ import {
   getAuthMode,
 } from "./config";
 
-const PUBLIC_PATHS = ["/login"];
+const PUBLIC_PATHS = ["/login", "/share"];
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.some(
