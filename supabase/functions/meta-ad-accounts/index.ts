@@ -26,6 +26,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, requireEnv } from "../_shared/http.ts";
 import { resolvePublishableKey, resolveSecretKey } from "../_shared/supabase.ts";
 import { openToken } from "../_shared/crypto.ts";
+import { readConnectionSecret } from "../_shared/connection-secret.ts";
 import { GraphApiError, listAdAccounts } from "../_shared/graph.ts";
 import { parseAdAccountPages } from "../_shared/ad-account.ts";
 
@@ -175,20 +176,19 @@ Deno.serve(async (req: Request) => {
 
   // -------------------------------------------------------------------------
   // action === "discover"
-  const { data: secret } = await admin
-    .from("meta_connection_secrets")
-    .select("token_cipher, token_iv, token_tag")
-    .eq("connection_id", conn.id)
-    .maybeSingle();
-  const s = secret as
-    | { token_cipher: string; token_iv: string; token_tag: string }
-    | null;
-  if (!s) return json({ error: "no_connection_secret" }, 409);
+  const secretResult = await readConnectionSecret(admin, conn.id);
+  if (!secretResult.ok) {
+    // "not_found" (consulta ok, 0 linhas) -> ausência real de secret. Já
+    // "read_failed" (consulta falhou) NUNCA vira no_connection_secret — é
+    // erro interno/transitório, sinalizado como 5xx, sem implicar reauth.
+    if (secretResult.kind === "not_found") return json({ error: "no_connection_secret" }, 409);
+    return json({ error: "connection_secret_read_failed" }, 500);
+  }
 
   let token: string;
   try {
     token = await openToken(
-      { cipher: s.token_cipher, iv: s.token_iv, tag: s.token_tag },
+      { cipher: secretResult.secret.token_cipher, iv: secretResult.secret.token_iv, tag: secretResult.secret.token_tag },
       ENC_KEY,
     );
   } catch {

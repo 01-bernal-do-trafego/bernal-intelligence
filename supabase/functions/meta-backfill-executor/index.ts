@@ -58,6 +58,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, requireEnv } from "../_shared/http.ts";
 import { resolveSecretKey } from "../_shared/supabase.ts";
 import { openToken } from "../_shared/crypto.ts";
+import { readConnectionSecret } from "../_shared/connection-secret.ts";
 import { classifyGraphError, GraphApiError, getRateUsage, listInsightsPage, resetRateUsage } from "../_shared/graph.ts";
 import { toDailyRows, type InsightLevel } from "../_shared/insights.ts";
 
@@ -264,12 +265,7 @@ Deno.serve(async (req: Request) => {
     return await fail("unknown", "connection_not_eligible", 0, 0);
   }
 
-  const { data: secretRow } = await admin
-    .from("meta_connection_secrets")
-    .select("token_cipher, token_iv, token_tag")
-    .eq("connection_id", acc.connection_id)
-    .maybeSingle();
-  const sec = secretRow as { token_cipher: string; token_iv: string; token_tag: string } | null;
+  const secretResult = await readConnectionSecret(admin, acc.connection_id);
 
   const markReauthRequired = async (reason: string) => {
     await admin
@@ -284,12 +280,22 @@ Deno.serve(async (req: Request) => {
   };
 
   let token: string | null = null;
-  if (!sec) {
-    await markReauthRequired("no_connection_secret"); // mesma abstração de sync-core.ts
-    return await fail("unknown", "no_connection_secret", 0, 0);
+  if (!secretResult.ok) {
+    if (secretResult.kind === "not_found") {
+      await markReauthRequired("no_connection_secret"); // mesma abstração de sync-core.ts
+      return await fail("unknown", "no_connection_secret", 0, 0);
+    }
+    // "read_failed": falha transitória/interna na consulta — NUNCA vira
+    // no_connection_secret, NUNCA marca reauthorization_required. Segmento
+    // falha de forma recuperável (mesmo mecanismo de retry/backoff de
+    // qualquer outra falha "transient" — fencing/lease/locks inalterados).
+    return await fail("transient", "connection_secret_read_failed", 0, 0);
   }
   try {
-    token = await openToken({ cipher: sec.token_cipher, iv: sec.token_iv, tag: sec.token_tag }, ENC_KEY);
+    token = await openToken(
+      { cipher: secretResult.secret.token_cipher, iv: secretResult.secret.token_iv, tag: secretResult.secret.token_tag },
+      ENC_KEY,
+    );
   } catch {
     await markReauthRequired("decrypt_failed"); // mesma abstração de sync-core.ts
     return await fail("unknown", "decrypt_failed", 0, 0);

@@ -88,6 +88,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import { json, requireEnv } from "../_shared/http.ts";
 import { resolveSecretKey } from "../_shared/supabase.ts";
 import { openToken } from "../_shared/crypto.ts";
+import { readConnectionSecret } from "../_shared/connection-secret.ts";
 import {
   GraphApiError,
   getAdAccountMeta,
@@ -175,18 +176,24 @@ Deno.serve(async (req: Request) => {
   const { account } = eligibility;
 
   // token só em memória, nunca retornado/logado. Discovery é READ-ONLY —
-  // nenhuma escrita em meta_connections mesmo se o secret faltar/for inválido.
-  const { data: secretRow } = await admin
-    .from("meta_connection_secrets")
-    .select("token_cipher, token_iv, token_tag")
-    .eq("connection_id", account.connection_id)
-    .maybeSingle();
-  const sec = secretRow as { token_cipher: string; token_iv: string; token_tag: string } | null;
-  if (!sec) return json({ error: "no_connection_secret" }, 409);
+  // nenhuma escrita em meta_connections mesmo se o secret faltar/for inválido
+  // OU se a própria leitura do secret falhar (mesma regra abaixo).
+  const secretResult = await readConnectionSecret(admin, account.connection_id);
+  if (!secretResult.ok) {
+    // "not_found" (consulta ok, 0 linhas) -> ausência real de secret.
+    // "read_failed" (consulta falhou) NUNCA vira no_connection_secret/
+    // no_history/connection_not_eligible/reauthorization_required — é erro
+    // interno/transitório, sinalizado como 5xx.
+    if (secretResult.kind === "not_found") return json({ error: "no_connection_secret" }, 409);
+    return json({ error: "connection_secret_read_failed" }, 500);
+  }
 
   let token: string;
   try {
-    token = await openToken({ cipher: sec.token_cipher, iv: sec.token_iv, tag: sec.token_tag }, ENC_KEY);
+    token = await openToken(
+      { cipher: secretResult.secret.token_cipher, iv: secretResult.secret.token_iv, tag: secretResult.secret.token_tag },
+      ENC_KEY,
+    );
   } catch {
     return json({ error: "decrypt_failed" }, 409);
   }

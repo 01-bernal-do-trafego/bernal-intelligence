@@ -268,7 +268,7 @@ describe("connection status — MESMA regra de meta_eligible_ad_accounts (active
   function connCheckBlock(): string {
     const idx = src.indexOf("ELIGIBLE_CONNECTION_STATUSES");
     expect(idx, "check de connection status não encontrado").toBeGreaterThan(-1);
-    return src.slice(idx, src.indexOf("const { data: secretRow }"));
+    return src.slice(idx, src.indexOf("const secretResult = await readConnectionSecret"));
   }
 
   it("a lista aceita é EXATAMENTE ['active', 'expiring'] — mesma de meta_eligible_ad_accounts", () => {
@@ -301,7 +301,7 @@ describe("connection status — MESMA regra de meta_eligible_ad_accounts (active
 
   it("status fora da lista (ou ausente) -> fail('connection_not_eligible'), ANTES da resolução de secret/token", () => {
     const eligibleIdx = src.indexOf("ELIGIBLE_CONNECTION_STATUSES");
-    const secretResolutionIdx = src.indexOf("const { data: secretRow }");
+    const secretResolutionIdx = src.indexOf("const secretResult = await readConnectionSecret");
     const openTokenIdx = src.indexOf("openToken(");
     const block = src.slice(eligibleIdx, secretResolutionIdx);
     expect(block).toContain('"connection_not_eligible"');

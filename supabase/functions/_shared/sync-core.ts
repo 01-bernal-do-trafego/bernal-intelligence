@@ -18,6 +18,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { openToken } from "./crypto.ts";
+import { readConnectionSecret } from "./connection-secret.ts";
 import { accountToday, addDays, isoDate } from "./date-util.ts";
 import {
   GraphApiError,
@@ -223,22 +224,19 @@ export async function runClientSync(
 
   for (const [connectionId, connRows] of byConn) {
     // token da conexão (em memória)
-    const { data: secret } = await admin
-      .from("meta_connection_secrets")
-      .select("token_cipher, token_iv, token_tag")
-      .eq("connection_id", connectionId)
-      .maybeSingle();
-    const sec = secret as
-      | { token_cipher: string; token_iv: string; token_tag: string }
-      | null;
+    const secretResult = await readConnectionSecret(admin, connectionId);
     let token: string | null = null;
     let tokenErr: string | null = null;
-    if (!sec) {
-      tokenErr = "no_connection_secret";
+    if (!secretResult.ok) {
+      // "not_found" (linha realmente ausente) vira no_connection_secret;
+      // "read_failed" (consulta falhou — nunca é a mesma coisa) vira um erro
+      // interno seguro, distinto e NUNCA marcado como reauthorization_required
+      // abaixo — falha transitória de leitura, não ausência de secret.
+      tokenErr = secretResult.kind === "not_found" ? "no_connection_secret" : "connection_secret_read_failed";
     } else {
       try {
         token = await openToken(
-          { cipher: sec.token_cipher, iv: sec.token_iv, tag: sec.token_tag },
+          { cipher: secretResult.secret.token_cipher, iv: secretResult.secret.token_iv, tag: secretResult.secret.token_tag },
           env.encKey,
         );
       } catch {
