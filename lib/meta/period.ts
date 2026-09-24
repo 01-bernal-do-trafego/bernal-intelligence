@@ -1,9 +1,13 @@
 import {
+  DEFAULT_PERIOD,
   PERIOD_PRESETS,
   isPeriodPreset,
+  parseCustomRange,
+  parsePeriod,
   type DateRange,
   type PeriodPreset,
 } from "@/lib/date-range";
+import { metaPresetRange } from "./date-preset";
 
 /**
  * Chaves de período do Bernal ↔ `meta_insights_periodic.period_key`.
@@ -69,4 +73,65 @@ export function metaPeriodLocator(
   range: DateRange,
 ): MetaPeriodLocator {
   return { periodKey, dateFrom: range.start, dateTo: range.end };
+}
+
+/**
+ * Período resolvido a partir dos parâmetros da URL: um preset nomeado, ou
+ * `custom` + o range já validado (nunca `null` quando `preset === "custom"`).
+ */
+export interface PeriodParamResolution {
+  preset: MetaPeriodKey;
+  customRange: DateRange | null;
+}
+
+/**
+ * Resolve `period`/`dateFrom`/`dateTo` da URL (strings NÃO confiáveis do
+ * browser) para um `MetaPeriodKey` + range custom validado.
+ *
+ * ÚNICO parser/resolver de período da URL — usado por `app/(app)/clients/[id]`
+ * (admin) E `app/share/[token]` (share), para nunca duplicar a regra.
+ *
+ * `period=custom` sem `dateFrom`/`dateTo` válidos (ausente, formato errado,
+ * ou `dateFrom > dateTo`) cai em `fallback` (preset) — nunca lança, nunca
+ * deixa `preset === "custom"` com `customRange: null`.
+ */
+export function resolvePeriodParam(
+  periodRaw: string | null | undefined,
+  dateFromRaw: string | null | undefined,
+  dateToRaw: string | null | undefined,
+  fallback: PeriodPreset = DEFAULT_PERIOD,
+): PeriodParamResolution {
+  if (periodRaw === META_CUSTOM_PERIOD_KEY) {
+    const range = parseCustomRange(dateFromRaw, dateToRaw);
+    if (range) return { preset: META_CUSTOM_PERIOD_KEY, customRange: range };
+    return { preset: fallback, customRange: null };
+  }
+  return { preset: parsePeriod(periodRaw, fallback), customRange: null };
+}
+
+/**
+ * `MetaPeriodKey` + range já validado (saída de `resolvePeriodParam`) ->
+ * `DateRange` concreto para consultar `meta_insights_daily`/`meta_insights_periodic`.
+ * Módulo PURO — sem acesso a banco.
+ *
+ * `custom`: usa `customRange` diretamente (datas explícitas, sem
+ * `metaPresetRange`/`today`). Sem `customRange` (chamador não validou — nunca
+ * confiamos cegamente): cai no preset padrão, como um `period` desconhecido.
+ *
+ * PARIDADE: para qualquer preset nomeado, `resolveDashboardRange(preset, today, null)`
+ * é EXATAMENTE `metaPresetRange(preset, today)` — e um `customRange` com as
+ * MESMAS datas de um preset produz o MESMO `DateRange` (mesma identidade de
+ * objeto de valor, comparável com `toEqual`). A Query Layer downstream
+ * (`server/real-dashboard.ts`) não faz nenhuma distinção depois deste ponto —
+ * dois ranges iguais produzem os mesmos totais/séries.
+ */
+export function resolveDashboardRange(
+  preset: MetaPeriodKey,
+  today: string,
+  customRange: DateRange | null | undefined,
+): DateRange {
+  if (preset === META_CUSTOM_PERIOD_KEY) {
+    return customRange ?? metaPresetRange(DEFAULT_PERIOD, today);
+  }
+  return metaPresetRange(preset, today);
 }

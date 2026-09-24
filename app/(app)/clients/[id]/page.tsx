@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { ChevronLeft } from "lucide-react";
 import { notFound } from "next/navigation";
-import { parsePeriod } from "@/lib/date-range";
+import { resolvePeriodParam } from "@/lib/meta/period";
 import { getClientRecord } from "@/server/clients";
 import { getMetaConnection } from "@/server/meta-connection";
 import { getAutoSyncEnabled, getClientSyncHealth } from "@/server/meta-sync-health";
@@ -26,6 +26,8 @@ interface ClientDashboardPageProps {
   params: Promise<{ id: string }>;
   searchParams: Promise<{
     period?: string;
+    dateFrom?: string;
+    dateTo?: string;
     compare?: string;
     account?: string;
     campaign?: string;
@@ -63,9 +65,11 @@ export default async function ClientDashboardPage({
   const shareLink = await getShareLinkState(client.id);
 
   const compare = sp.compare === "1";
+  const { preset, customRange } = resolvePeriodParam(sp.period, sp.dateFrom, sp.dateTo);
   const dashboard = await getClientDashboard({
     client,
-    preset: parsePeriod(sp.period),
+    preset,
+    customRange,
     compare,
     accountId: sp.account,
     campaignId: sp.campaign,

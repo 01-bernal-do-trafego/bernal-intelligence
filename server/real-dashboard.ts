@@ -1,16 +1,17 @@
 import "server-only";
 
-import type { PeriodPreset } from "@/lib/date-range";
+import type { DateRange } from "@/lib/date-range";
 import { eachDay } from "@/lib/date-range";
+import { resolveDashboardRange, type MetaPeriodKey } from "@/lib/meta/period";
 import { compareMetric } from "@/lib/comparison";
 import {
   META_DASHBOARD_PRESETS,
-  metaPresetRange,
   metaPreviousRange,
   todayInOffset,
 } from "@/lib/meta/date-preset";
 import {
   coverageByPreset as computeCoverageByPreset,
+  coverageNote,
   dailyHorizon,
   rangeCoverage,
 } from "@/lib/meta/daily-coverage";
@@ -22,6 +23,7 @@ import {
 } from "@/lib/meta/periodic-select";
 import { dedupeByAttribution } from "@/lib/meta/insights-attribution";
 import {
+  REACH_CUSTOM_RANGE_NOTE,
   REACH_MULTI_ACCOUNT_NOTE,
   REACH_NOT_SYNCED_NOTE,
   buildRealTotals,
@@ -127,7 +129,9 @@ function metricEntry(
 interface RealDashboardArgs {
   client: ClientRecord;
   dataMode: ClientDataMode;
-  preset: PeriodPreset;
+  preset: MetaPeriodKey;
+  /** Só usado quando `preset === "custom"` — já validado por `resolvePeriodParam`. */
+  customRange?: DateRange | null;
   compare: boolean;
   accountId?: string;
   campaignId?: string;
@@ -136,7 +140,7 @@ interface RealDashboardArgs {
 export async function getRealClientDashboard(
   args: RealDashboardArgs,
 ): Promise<ClientDashboardData> {
-  const { client, dataMode, preset, compare } = args;
+  const { client, dataMode, preset, compare, customRange } = args;
   const supabase = await createSupabaseServerClient();
   const config = await getDashboardConfig(client.id);
 
@@ -150,12 +154,28 @@ export async function getRealClientDashboard(
   // "hoje" no fuso da conta (conta única) ou da primeira conta vinculada.
   const tz = (singleAccount ?? linked[0])?.timezoneName ?? "UTC";
   const today = todayInOffset(utcOffsetMinutes(tz) ?? 0);
-  const range = metaPresetRange(preset, today);
+
+  const range: DateRange = resolveDashboardRange(preset, today, customRange);
   const previous = metaPreviousRange(range);
   const horizon = dailyHorizon(today);
-  // menor data a buscar: cobre o horizonte E o período anterior (quando existir).
-  const dailyFrom = previous.start < horizon.start ? previous.start : horizon.start;
-  const dailyTo = range.end > horizon.end ? range.end : horizon.end;
+  // menor/maior data a buscar:
+  //  - presets: cobre o horizonte fixo (últimos ~60d) E o período anterior —
+  //    mantém os badges de cobertura dos 7 presets corretos.
+  //  - custom: intervalo pode ser bem anterior ao horizonte (histórico) — só
+  //    busca o que o range pedido + seu comparativo realmente precisam, para
+  //    não puxar meses de linhas desnecessárias numa consulta histórica.
+  const dailyFrom =
+    preset === "custom"
+      ? previous.start
+      : previous.start < horizon.start
+        ? previous.start
+        : horizon.start;
+  const dailyTo =
+    preset === "custom"
+      ? range.end
+      : range.end > horizon.end
+        ? range.end
+        : horizon.end;
 
   // ---- campanhas do escopo ------------------------------------------------
   let campQuery = supabase
@@ -207,11 +227,22 @@ export async function getRealClientDashboard(
   const presentDates = new Set<string>(
     dailyRows.map((r) => String(r.date)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)),
   );
-  const coverageAll = computeCoverageByPreset({
-    presets: META_DASHBOARD_PRESETS,
-    today,
-    presentDates,
-  });
+  // Badge dos 7 presets fixos: só faz sentido quando a consulta diária
+  // cobriu o horizonte deles. Em `custom` a consulta é escopada ao range
+  // pedido (ver `dailyFrom`/`dailyTo` acima) e não cobre necessariamente os
+  // outros presets — computá-lo aqui reportaria "vazio" incorretamente para
+  // presets fora do range custom. Não é usado hoje pela UI (só
+  // `selectedCoverage` é renderizado); omitido em vez de calculado errado.
+  const coverageAll =
+    preset === "custom"
+      ? undefined
+      : computeCoverageByPreset({
+          presets: META_DASHBOARD_PRESETS,
+          today,
+          presentDates,
+        });
+  // Cobertura do RANGE PEDIDO — já genérica (não é uma janela fixa de
+  // 7/14/30 dias), funciona igual para preset e para custom.
   const selectedCoverage = rangeCoverage({ range, today, presentDates });
 
   const toDaily = (r: Record<string, unknown>): DailyInsightLike => ({
@@ -387,10 +418,15 @@ export async function getRealClientDashboard(
   /** totais do card vieram do agregado da Meta (autoritativo)? */
   const totalsFromAggregate = periodicRow != null;
 
-  // totais das aditivas vêm de soma de diário incompleto?
+  // totais das aditivas vêm de soma de diário com dias sem linha no escopo?
+  // Ausência de linha não é falha de sync (pode ser campanha sem veiculação,
+  // conta sem saldo, pausa...) — a copy é neutra, nunca "incompleto"/
+  // "sincronização" (ver `coverageNote`).
   const additiveIncomplete =
     !totalsFromAggregate && selectedCoverage.status !== "complete";
-  const INCOMPLETE_NOTE = `Período incompleto no histórico diário — ${selectedCoverage.missingDates.length} dia(s) sem dados. Rode “Sincronizar Meta”.`;
+  const INCOMPLETE_NOTE =
+    coverageNote(selectedCoverage) ??
+    "Há dias sem dados de atividade neste período.";
 
   // ---- totais de CONVERSÃO do período ---------------------------------
   // Preferimos o agregado periódico do intervalo (autoritativo); sem ele,
@@ -431,7 +467,12 @@ export async function getRealClientDashboard(
       if (!consolidable) {
         entry = { ...entry, available: false, unavailableReason: REACH_MULTI_ACCOUNT_NOTE };
       } else if (periodicMissing) {
-        entry = { ...entry, available: false, unavailableReason: REACH_NOT_SYNCED_NOTE };
+        entry = {
+          ...entry,
+          available: false,
+          unavailableReason:
+            preset === "custom" ? REACH_CUSTOM_RANGE_NOTE : REACH_NOT_SYNCED_NOTE,
+        };
       }
     } else {
       if (spec.format !== "currency" && spec.format !== "number" && cur === null) {

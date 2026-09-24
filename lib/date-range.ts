@@ -55,6 +55,45 @@ export function periodLabel(preset: PeriodPreset): string {
 }
 
 /* ------------------------------------------------------------------ */
+/* Range customizado (validação de datas vindas da URL)               */
+/* ------------------------------------------------------------------ */
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** `true` só para strings `YYYY-MM-DD` que são datas de calendário reais
+ * (rejeita `2025-02-30`, `2025-13-01` etc. — não só o formato). */
+function isValidISODate(value: string): boolean {
+  if (!ISO_DATE_RE.test(value)) return false;
+  const [y, m, d] = value.split("-").map(Number);
+  if (m < 1 || m > 12) return false;
+  const date = new Date(Date.UTC(y, m - 1, d));
+  return (
+    date.getUTCFullYear() === y &&
+    date.getUTCMonth() === m - 1 &&
+    date.getUTCDate() === d
+  );
+}
+
+/**
+ * Valida um range customizado vindo da URL (`dateFrom`/`dateTo`, strings NÃO
+ * confiáveis do browser). `null` para qualquer caso inválido — ausente,
+ * formato errado, data de calendário inexistente, ou `dateFrom > dateTo`.
+ * Quem chama decide o fallback seguro; esta função nunca lança.
+ *
+ * Comparação de string funciona porque o formato é sempre `YYYY-MM-DD`
+ * (zero-padded) — nada de `Date`/fuso na comparação em si.
+ */
+export function parseCustomRange(
+  dateFromRaw: string | null | undefined,
+  dateToRaw: string | null | undefined,
+): DateRange | null {
+  if (!dateFromRaw || !dateToRaw) return null;
+  if (!isValidISODate(dateFromRaw) || !isValidISODate(dateToRaw)) return null;
+  if (dateFromRaw > dateToRaw) return null;
+  return { start: dateFromRaw, end: dateToRaw };
+}
+
+/* ------------------------------------------------------------------ */
 /* Helpers de data (UTC, data pura)                                    */
 /* ------------------------------------------------------------------ */
 

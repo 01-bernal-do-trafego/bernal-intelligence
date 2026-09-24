@@ -112,3 +112,29 @@ export function coverageByPreset(args: {
   }
   return out;
 }
+
+/**
+ * Copy do produto para uma `Coverage` que não é `complete` — SEMPRE neutra.
+ * Ausência de linha em `meta_insights_daily` num dia NÃO é evidência de
+ * falha de sincronização: pode ser campanha sem veiculação, conta sem
+ * saldo, campanha pausada, ou de fato um buraco de sync — esta função (e
+ * `rangeCoverage`/`presetCoverage`, que ela lê) não distinguem essas causas,
+ * então a comunicação também não pode. NUNCA usar "período incompleto",
+ * "sincronização incompleta" ou "dados faltando" sem evidência REAL de
+ * falha (ex.: um status de sync run explicitamente com erro — fora do
+ * escopo desta função). Mesma regra para preset e para custom range.
+ *
+ * `null` quando `status === "complete"` (nada a dizer).
+ */
+export function coverageNote(coverage: Coverage): string | null {
+  if (coverage.status === "complete") return null;
+  if (coverage.missingDates.length === 0) {
+    // só acontece quando o intervalo pedido é exatamente "hoje" e a linha de
+    // hoje ainda não existe (hoje nunca entra em `missingDates`).
+    return "Ainda não há dados de atividade registrados para hoje. Isso pode acontecer em dias sem veiculação.";
+  }
+  return (
+    `Há ${coverage.missingDates.length} dia(s) sem dados de atividade neste período. ` +
+    "Isso pode acontecer em dias sem veiculação."
+  );
+}

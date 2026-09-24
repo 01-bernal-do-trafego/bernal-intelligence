@@ -134,3 +134,15 @@ export const REACH_MULTI_ACCOUNT_NOTE =
 
 export const REACH_NOT_SYNCED_NOTE =
   "O alcance agregado deste período ainda não foi sincronizado. Rode “Sincronizar Meta”.";
+
+/**
+ * Alcance/frequência de um período CUSTOM sem agregado periódico exato
+ * (`meta_insights_periodic` não tem uma linha `custom` para esse intervalo
+ * — nada a sincronizar). Nunca somamos reach/frequency diário para produzir
+ * o total: a pessoa alcançada em dois dias contaria 2x, superestimando
+ * alcance e subestimando frequência. Os pontos diários da série continuam
+ * válidos (cada um é o valor nativo daquele dia); só o TOTAL do período fica
+ * indisponível.
+ */
+export const REACH_CUSTOM_RANGE_NOTE =
+  "Alcance e frequência totais não estão disponíveis para períodos personalizados sem um agregado exato da Meta para esse intervalo (evita somar alcance diário, o que superestimaria o total). A série diária permanece disponível.";

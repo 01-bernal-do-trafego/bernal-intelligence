@@ -73,7 +73,13 @@ describe("reuso — mesmo getClientDashboard da página administrativa, nenhum c
     expect(src).toContain('from "@/server/client-dashboard"');
   });
 
-  it("importa parsePeriod de @/lib/date-range (mesmo parser de período da página admin)", () => {
-    expect(src).toContain('from "@/lib/date-range"');
+  it("importa resolvePeriodParam de @/lib/meta/period (mesmo resolver de período/custom range da página admin — não reimplementa parsing de dateFrom/dateTo)", () => {
+    expect(src).toContain('from "@/lib/meta/period"');
+    expect(code).toMatch(/resolvePeriodParam\(sp\.period,\s*sp\.dateFrom,\s*sp\.dateTo\)/);
+  });
+
+  it("aceita dateFrom/dateTo na URL (mesmo contrato de período personalizado da página admin)", () => {
+    expect(code).toMatch(/dateFrom\?:\s*string/);
+    expect(code).toMatch(/dateTo\?:\s*string/);
   });
 });

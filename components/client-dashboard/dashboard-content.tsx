@@ -15,6 +15,7 @@ import {
 } from "@/lib/dashboard-config";
 import type { ClientDashboardData, DashboardMetric, MetricKey } from "@/server/client-dashboard";
 import type { ClientSyncHealth } from "@/server/meta-sync-health";
+import { coverageNote } from "@/lib/meta/daily-coverage";
 import { DateRangePicker } from "@/components/ui/date-range-picker";
 import { MetricCard, type MetricDelta } from "@/components/ui/metric-card";
 import { ChartContainer } from "@/components/ui/chart-container";
@@ -150,16 +151,10 @@ export function DashboardContent({
               <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-4 py-2 text-sm text-warning">
                 <Info className="mt-0.5 size-4 shrink-0" />
                 <p>
-                  {dashboard.selectedCoverage.status === "empty"
-                    ? "Este período ainda não foi sincronizado no histórico diário."
-                    : `Período incompleto: ${dashboard.selectedCoverage.missingDates.length} dia(s) sem dados no histórico diário` +
-                      (dashboard.selectedCoverage.missingDates[0]
-                        ? ` (a partir de ${dashboard.selectedCoverage.missingDates[0]})`
-                        : "") +
-                      "."}{" "}
+                  {coverageNote(dashboard.selectedCoverage)}{" "}
                   {dashboard.totalsFromAggregate
-                    ? "Os totais abaixo vêm do agregado da Meta (corretos); os gráficos mostram só os dias já sincronizados."
-                    : "Totais e gráficos podem estar parciais. Rode “Sincronizar Meta”."}
+                    ? "Os totais abaixo vêm do agregado da Meta."
+                    : "Totais e gráficos consideram só os dias com dados registrados neste período."}
                 </p>
               </div>
             )}
@@ -291,9 +286,7 @@ export function DashboardContent({
                       dashboard.selectedCoverage &&
                       dashboard.selectedCoverage.status !== "complete" && (
                         <p className="mt-2 text-[11px] text-warning">
-                          Gráfico incompleto:{" "}
-                          {dashboard.selectedCoverage.missingDates.length} dia(s)
-                          sem dados no período.
+                          {coverageNote(dashboard.selectedCoverage)}
                         </p>
                       )}
                   </ChartContainer>

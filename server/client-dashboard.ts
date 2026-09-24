@@ -1,6 +1,7 @@
 import "server-only";
 
-import { eachDay, type PeriodPreset } from "@/lib/date-range";
+import { eachDay, type DateRange } from "@/lib/date-range";
+import type { MetaPeriodKey } from "@/lib/meta/period";
 import { compareMetric, type Comparison, type MetricBehavior } from "@/lib/comparison";
 import { safeDivide } from "@/lib/metrics";
 import { getDemoPerformance } from "@/lib/mock/demo-performance";
@@ -73,7 +74,9 @@ export interface DashboardCampaignRow {
 
 export interface ClientDashboardParams {
   client: ClientRecord;
-  preset?: PeriodPreset;
+  preset?: MetaPeriodKey;
+  /** Só usado quando `preset === "custom"` — já validado por `resolvePeriodParam`. */
+  customRange?: DateRange | null;
   compare?: boolean;
   accountId?: string;
   campaignId?: string;
@@ -89,7 +92,7 @@ export interface ClientDashboardData {
   accounts: AdAccount[];
   campaigns: Campaign[];
   filters: { accountId: string; campaignId: string };
-  preset: PeriodPreset;
+  preset: MetaPeriodKey;
   compare: boolean;
   range: { start: string; end: string };
   previous: { start: string; end: string };
@@ -161,6 +164,7 @@ export async function getClientDashboard(
       client,
       dataMode,
       preset: preset ?? "last_7d",
+      customRange: params.customRange,
       compare,
       accountId: params.accountId,
       campaignId: params.campaignId,
@@ -188,7 +192,7 @@ export async function getClientDashboard(
     (c) => accountId === "all" || c.accountId === accountId,
   );
 
-  const resolved = resolveRequestedPeriod(preset, compare);
+  const resolved = resolveRequestedPeriod(preset, compare, params.customRange);
   const { range, previous } = resolved;
 
   const scoped = demo.dailyMetrics.filter(
@@ -324,7 +328,7 @@ export async function getClientDashboard(
 async function emptyDashboard(
   client: ClientRecord,
   dataStatus: DashboardDataStatus,
-  preset: PeriodPreset | undefined,
+  preset: MetaPeriodKey | undefined,
   compare: boolean,
 ): Promise<ClientDashboardData> {
   const config = await getDashboardConfig(client.id);

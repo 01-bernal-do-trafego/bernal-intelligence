@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   eachDay,
+  parseCustomRange,
   parsePeriod,
   previousRange,
   rangeLengthDays,
@@ -60,5 +61,62 @@ describe("previousRange", () => {
   it("mesma duração, terminando um dia antes do início", () => {
     const current = resolvePeriod("last_7d", TODAY); // 26/08 -> 01/09
     expect(previousRange(current)).toEqual({ start: "2026-08-19", end: "2026-08-25" });
+  });
+});
+
+describe("parseCustomRange — BUG 01 V1.1 (período personalizado)", () => {
+  it("range válido: retorna { start, end } exatamente como recebido", () => {
+    expect(parseCustomRange("2025-05-14", "2025-06-30")).toEqual({
+      start: "2025-05-14",
+      end: "2025-06-30",
+    });
+  });
+
+  it("range histórico de meses seguidos (o caso real do bug: > 30 dias, atravessa vários meses)", () => {
+    expect(parseCustomRange("2025-05-14", "2026-09-13")).toEqual({
+      start: "2025-05-14",
+      end: "2026-09-13",
+    });
+  });
+
+  it("dateFrom ausente -> null", () => {
+    expect(parseCustomRange(null, "2025-06-30")).toBeNull();
+    expect(parseCustomRange(undefined, "2025-06-30")).toBeNull();
+    expect(parseCustomRange("", "2025-06-30")).toBeNull();
+  });
+
+  it("dateTo ausente -> null", () => {
+    expect(parseCustomRange("2025-05-14", null)).toBeNull();
+    expect(parseCustomRange("2025-05-14", undefined)).toBeNull();
+    expect(parseCustomRange("2025-05-14", "")).toBeNull();
+  });
+
+  it("formato inválido -> null (não é YYYY-MM-DD)", () => {
+    expect(parseCustomRange("14/05/2025", "2025-06-30")).toBeNull();
+    expect(parseCustomRange("2025-5-14", "2025-06-30")).toBeNull();
+    expect(parseCustomRange("2025-05-14T00:00:00Z", "2025-06-30")).toBeNull();
+    expect(parseCustomRange("not-a-date", "2025-06-30")).toBeNull();
+  });
+
+  it("data de calendário inexistente -> null (não só formato — valida o calendário)", () => {
+    expect(parseCustomRange("2025-02-30", "2025-06-30")).toBeNull(); // fevereiro não tem dia 30
+    expect(parseCustomRange("2025-13-01", "2025-06-30")).toBeNull(); // mês 13
+    expect(parseCustomRange("2025-04-31", "2025-06-30")).toBeNull(); // abril tem 30 dias
+  });
+
+  it("dateFrom > dateTo -> null", () => {
+    expect(parseCustomRange("2025-06-30", "2025-05-14")).toBeNull();
+  });
+
+  it("dateFrom === dateTo -> válido (range de 1 dia)", () => {
+    expect(parseCustomRange("2025-05-14", "2025-05-14")).toEqual({
+      start: "2025-05-14",
+      end: "2025-05-14",
+    });
+  });
+
+  it("nunca lança exceção, mesmo com lixo total", () => {
+    expect(() => parseCustomRange("💥", "🔥")).not.toThrow();
+    expect(parseCustomRange("💥", "🔥")).toBeNull();
   });
 });
