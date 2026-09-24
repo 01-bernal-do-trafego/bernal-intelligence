@@ -74,10 +74,27 @@ describe("integridade do registry", () => {
     }
   });
 
-  it("métricas action-backed são requiresEvent + depends_on_account", () => {
+  it("métricas action-backed são requiresEvent + depends_on_account (exceto interações orgânicas sempre disponíveis)", () => {
+    // FEATURE 02A: engajamento/vídeo simples não dependem de pixel/evento
+    // configurado na conta — são interações inerentes ao próprio anúncio,
+    // sempre presentes quando a Meta reporta a linha (diferente de
+    // leads/purchases/etc., que dependem de um evento de conversão
+    // configurado no pixel/app do cliente).
+    const ALWAYS_AVAILABLE_ACTION_METRICS = new Set([
+      "post_engagement",
+      "post_reactions",
+      "post_comments",
+      "post_saves",
+      "video_views",
+    ]);
     for (const m of METRIC_REGISTRY) {
       if (m.source.kind !== "action") continue;
       if (m.id === "results") continue; // resolvido via config do cliente
+      if (ALWAYS_AVAILABLE_ACTION_METRICS.has(m.id)) {
+        expect(m.requiresEvent, m.id).toBe(false);
+        expect(m.availability, m.id).toBe("stable");
+        continue;
+      }
       expect(m.requiresEvent, m.id).toBe(true);
       expect(m.availability, m.id).toBe("depends_on_account");
     }

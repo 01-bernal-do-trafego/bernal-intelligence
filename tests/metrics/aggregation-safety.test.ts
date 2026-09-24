@@ -220,3 +220,47 @@ describe("cobertura: todo ratio do registry é recomputável OU exige periódico
     }
   });
 });
+
+describe("FEATURE 02A — engajamento/vídeo simples: aditivas, mesma regra de leads/purchases", () => {
+  for (const id of [
+    "post_engagement",
+    "post_reactions",
+    "post_comments",
+    "post_saves",
+    "video_views",
+  ]) {
+    it(`${id} = direct_sum`, () => {
+      expect(aggregationMethod(id)).toBe("direct_sum");
+      expect(isAdditiveMetric(id)).toBe(true);
+      expect(canSumAcrossTime(id)).toBe(true);
+      expect(canSumAcrossEntities(id)).toBe(true);
+      expect(canRecomputeFromComponents(id)).toBe(false);
+      expect(requiresExactPeriodicAggregate(id)).toBe(false);
+    });
+  }
+});
+
+describe("FEATURE 02A — custos novos: ratio/recompute_from_components, nunca soma", () => {
+  for (const id of [
+    "cost_per_landing_page_view",
+    "cost_per_add_to_cart",
+    "cost_per_initiate_checkout",
+    "cost_per_video_view",
+  ]) {
+    it(`${id} = recompute_from_components (spend/evento — ambos direct_sum)`, () => {
+      expect(getMetricAggregationClass(id)).toBe("ratio");
+      expect(aggregationMethod(id)).toBe("recompute_from_components");
+      expect(isAdditiveMetric(id)).toBe(false);
+      expect(canSumAcrossTime(id)).toBe(false);
+      expect(canSumAcrossEntities(id)).toBe(false);
+      expect(canRecomputeFromComponents(id)).toBe(true);
+      expect(requiresExactPeriodicAggregate(id)).toBe(false);
+    });
+  }
+
+  it("cost_per_landing_page_view depende de spend (direct_sum) + landing_page_views (direct_sum)", () => {
+    expect(aggregationMethod("spend")).toBe("direct_sum");
+    expect(aggregationMethod("landing_page_views")).toBe("direct_sum");
+    expect(canRecomputeFromComponents("cost_per_landing_page_view")).toBe(true);
+  });
+});

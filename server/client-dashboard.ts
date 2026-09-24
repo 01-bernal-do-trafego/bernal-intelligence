@@ -4,6 +4,12 @@ import { eachDay, type DateRange } from "@/lib/date-range";
 import type { MetaPeriodKey } from "@/lib/meta/period";
 import { compareMetric, type Comparison, type MetricBehavior } from "@/lib/comparison";
 import { safeDivide } from "@/lib/metrics";
+import {
+  ALL_METRIC_KEYS,
+  FEATURE_02A_METRIC_KEYS,
+  metricFormatOf,
+  type MetricKey,
+} from "@/lib/metrics/dashboard-metric-keys";
 import { getDemoPerformance } from "@/lib/mock/demo-performance";
 import type { DashboardConfigValue } from "@/lib/dashboard-config";
 import type {
@@ -22,24 +28,11 @@ import { resolveRequestedPeriod } from "./period";
 import { aggregate, dailyTotals, withinRange, type DailyTotal } from "./mock-helpers";
 import type { SeriesPair } from "@/lib/series";
 
-export type MetricKey =
-  | "investment"
-  | "results"
-  | "cost_per_result"
-  | "reach"
-  | "impressions"
-  | "clicks"
-  | "ctr"
-  | "cpc"
-  | "cpm"
-  | "frequency"
-  // Mensageria liberada (validada com dados reais). O conjunto canônico das
-  // 6 métricas de conversão liberadas vive em `lib/meta/dashboard-conversions`
-  // (`RELEASED_CONVERSION_METRICS`).
-  | "messaging_conversations_started"
-  | "cost_per_conversation"
-  | "messaging_contacts_total"
-  | "messaging_contacts_new";
+// `MetricKey` e as listas derivadas vivem em `lib/metrics/dashboard-metric-keys.ts`
+// (módulo PURO, sem "server-only") — reexportadas aqui para não quebrar
+// quem já importa `type { MetricKey }`/`ALL_METRIC_KEYS` de `@/server/client-dashboard`.
+export type { MetricKey };
+export { ALL_METRIC_KEYS, FEATURE_02A_METRIC_KEYS };
 
 export type MetricFormat = "currency" | "number" | "percent" | "decimal";
 
@@ -57,17 +50,22 @@ export interface DashboardCampaignRow {
   name: string;
   status: CampaignStatus;
   spend: number;
-  reach: number;
+  /** `null` = sem agregado periódico exato para a campanha neste intervalo
+   * (nunca somado do diário — ver BUG 01/FEATURE 02A #9). Mostra "—". */
+  reach: number | null;
   impressions: number;
   clicks: number;
   ctr: number;
   cpc: number;
   cpm: number;
+  /** Mesma regra de `reach`: só do agregado periódico exato, nunca somado. */
+  frequency: number | null;
   /**
-   * Métricas de conversão por campanha (id -> valor). `null` = campanha sem
-   * esse evento no período (mostra "—"); `0` = evento medido com zero.
-   * Chaves: results, cost_per_result, messaging_conversations_started,
-   * cost_per_conversation, messaging_contacts_total, messaging_contacts_new.
+   * Demais métricas por campanha (id -> valor). `null` = campanha sem esse
+   * evento/fonte no período (mostra "—"); `0` = evento medido com zero.
+   * Chaves: as liberadas com `dashboardSurfaces` incluindo "table" no Metric
+   * Registry (`lib/metrics/registry.ts`) — resultados/mensageria/ecommerce/
+   * engajamento/cliques no link, exceto reach/frequency (acima, campo próprio).
    */
   conversions: Record<string, number | null>;
 }
@@ -225,7 +223,7 @@ export async function getClientDashboard(
     available: false,
     unavailableReason: "Sem dados demonstrativos para esta métrica.",
   });
-  const metrics: Record<MetricKey, DashboardMetric> = {
+  const knownMetrics: Record<string, DashboardMetric> = {
     investment: metric(cur.spend, prev.spend, "neutral", "currency"),
     results: metric(cur.results, prev.results, resultMetric.behavior, "number"),
     cost_per_result: metric(cur.cpr, prev.cpr, "lower_is_better", "currency"),
@@ -252,6 +250,12 @@ export async function getClientDashboard(
     messaging_contacts_total: demoUnavailable("number"),
     messaging_contacts_new: demoUnavailable("number"),
   };
+  // FEATURE 02A: o dataset mock (dev sem Supabase) não modela leads/ecommerce/
+  // engajamento/vídeo por linha — sem fonte demo real, nunca aproximada.
+  for (const key of FEATURE_02A_METRIC_KEYS) {
+    knownMetrics[key] = demoUnavailable(metricFormatOf(key));
+  }
+  const metrics = knownMetrics as Record<MetricKey, DashboardMetric>;
 
   const currentTotals = dailyTotals(currentRows, eachDay(range));
   const previousTotals = compare
@@ -288,6 +292,7 @@ export async function getClientDashboard(
         ctr: agg.ctr,
         cpc: agg.cpc,
         cpm: agg.cpm,
+        frequency: safeDivide(agg.impressions, agg.reach),
         conversions: {
           results: agg.results,
           cost_per_result: agg.cpr,
@@ -341,22 +346,9 @@ async function emptyDashboard(
         ? "Conecte a Meta Ads deste cliente."
         : "Rode a primeira sincronização.",
   });
-  const metrics = {
-    investment: zero("currency"),
-    results: zero("number"),
-    cost_per_result: zero("currency"),
-    reach: zero("number"),
-    impressions: zero("number"),
-    clicks: zero("number"),
-    ctr: zero("percent"),
-    cpc: zero("currency"),
-    cpm: zero("currency"),
-    frequency: zero("decimal"),
-    messaging_conversations_started: zero("number"),
-    cost_per_conversation: zero("currency"),
-    messaging_contacts_total: zero("number"),
-    messaging_contacts_new: zero("number"),
-  } as Record<MetricKey, DashboardMetric>;
+  const metrics = Object.fromEntries(
+    ALL_METRIC_KEYS.map((key) => [key, zero(metricFormatOf(key))]),
+  ) as Record<MetricKey, DashboardMetric>;
 
   return {
     mode: "real",

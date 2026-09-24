@@ -40,6 +40,9 @@ import {
   sumRawMaps,
   type ReleasedConversionMetric,
 } from "@/lib/meta/dashboard-conversions";
+import { withResolvedResults } from "@/lib/meta/result-metric-resolve";
+import { computeMetric, type MetricTotals } from "@/lib/metrics/compute";
+import { METRIC_REGISTRY, getMetricDefinition, resolveMetricId } from "@/lib/metrics/registry";
 import { createSupabaseServerClient } from "@/supabase/server";
 import type { ClientRecord } from "@/types/client";
 import type {
@@ -103,7 +106,57 @@ const REAL_SPECS: MetricSpec[] = [
   { key: "ctr", format: "percent", behavior: "higher_is_better" },
   { key: "cpc", format: "currency", behavior: "lower_is_better" },
   { key: "cpm", format: "currency", behavior: "neutral" },
+  // FEATURE 02A: já coletados/computáveis (coluna própria + fórmula sobre
+  // componentes já aditivos) — mesma lógica de REAL_SPECS acima, nada novo.
+  { key: "inline_link_clicks", format: "number", behavior: "higher_is_better" },
+  { key: "ctr_link", format: "percent", behavior: "higher_is_better" },
+  { key: "cpc_link", format: "currency", behavior: "lower_is_better" },
 ];
+
+/**
+ * FEATURE 02A — ids do Registry (card/chart) computados pelo loop
+ * registry-driven abaixo, em vez de REAL_SPECS/RELEASED_CONVERSION_METRICS
+ * hardcoded. Deriva do Registry: `dashboardSurfaces` inclui "card" ou
+ * "chart", MENOS os ids já cobertos por REAL_SPECS (colunas/ratios puros —
+ * não precisam de `actions`). Adicionar uma métrica nova = editar só
+ * `lib/metrics/registry.ts` (+ `lib/meta/action-type-map.ts` se for
+ * action-sourced) — nunca este arquivo.
+ */
+const REAL_SPEC_REGISTRY_IDS = new Set(REAL_SPECS.map((s) => resolveMetricId(s.key)));
+// results/cost_per_result/mensageria continuam pelo caminho já testado
+// (RELEASED_CONVERSION_METRICS, abaixo) — excluídas daqui para não computar
+// a mesma métrica duas vezes.
+const RELEASED_IDS = new Set<string>(RELEASED_CONVERSION_METRICS);
+const REGISTRY_CARD_CHART_IDS: readonly string[] = METRIC_REGISTRY.filter(
+  (def) =>
+    (def.dashboardSurfaces.includes("card") || def.dashboardSurfaces.includes("chart")) &&
+    !REAL_SPEC_REGISTRY_IDS.has(def.id) &&
+    !RELEASED_IDS.has(def.id),
+).map((def) => def.id);
+
+/**
+ * FEATURE 02A — colunas de tabela derivadas do Registry, na bolsa genérica
+ * `DashboardCampaignRow.conversions` (não em campo próprio). `spend/reach/
+ * impressions/clicks/ctr/cpc/cpm/frequency` continuam campos dedicados da
+ * row (pré-existentes ou tratados à parte por causa de reach/frequency
+ * precisarem do intervalo EXATO — ver `TOP_LEVEL_CAMPAIGN_FIELDS`).
+ */
+const TOP_LEVEL_CAMPAIGN_FIELDS = new Set([
+  "spend",
+  "reach",
+  "impressions",
+  "clicks",
+  "ctr",
+  "cpc",
+  "cpm",
+  "frequency",
+]);
+const REGISTRY_TABLE_IDS: readonly string[] = METRIC_REGISTRY.filter(
+  (def) =>
+    def.dashboardSurfaces.includes("table") &&
+    !TOP_LEVEL_CAMPAIGN_FIELDS.has(def.id) &&
+    !RELEASED_IDS.has(def.id),
+).map((def) => def.id);
 const CONVERSION_NO_SOURCE_REASON =
   "Sem esse evento no período para esta conta.";
 const CONVERSION_NO_RESULT_METRIC_REASON =
@@ -524,6 +577,42 @@ export async function getRealClientDashboard(
     metrics[id as MetricKey] = entry;
   }
 
+  // ---- FEATURE 02A: demais métricas liberadas do Registry ---------------
+  // União dos totais aditivos/periodic-exato (`curTotals`/`prevTotals` — já
+  // corretos: reach/frequency só de periodic exato, aditivas com fallback de
+  // soma diária) com as ações resolvidas (`curConvTotals`/`prevConvTotals`
+  // .actions/.actionValues, via action-type-map). Permite ao `computeMetric`
+  // do Registry recalcular QUALQUER fórmula (ex.: cpa = spend/purchases,
+  // ctr_link = inline_link_clicks/impressions) sobre um único MetricTotals
+  // coerente — reaproveita a MESMA matemática de REAL_SPECS/conversion-events,
+  // não duplica nada.
+  const curAllTotals: MetricTotals = withResolvedResults(
+    { ...curTotals, actions: curConvTotals.actions, actionValues: curConvTotals.actionValues },
+    resultType,
+  );
+  const prevAllTotals: MetricTotals = withResolvedResults(
+    { ...prevTotals, actions: prevConvTotals.actions, actionValues: prevConvTotals.actionValues },
+    resultType,
+  );
+  for (const registryId of REGISTRY_CARD_CHART_IDS) {
+    const def = getMetricDefinition(registryId);
+    if (!def) continue; // nunca deveria faltar — defesa em profundidade
+    const cur = computeMetric(registryId, curAllTotals);
+    const prev = computeMetric(registryId, prevAllTotals);
+    let entry: DashboardMetric = {
+      comparison: compareMetric(cur ?? 0, compare ? (prev ?? 0) : (cur ?? 0), def.behavior),
+      format: def.format,
+      available: cur !== null,
+    };
+    if (cur === null) {
+      entry = { ...entry, unavailableReason: CONVERSION_NO_SOURCE_REASON };
+      conversionUnavailable.push(registryId as MetricKey);
+    } else if (additiveIncomplete) {
+      entry = { ...entry, unavailableReason: INCOMPLETE_NOTE };
+    }
+    metrics[registryId as MetricKey] = entry;
+  }
+
   // ---- séries diárias -------------------------------------------------
   const days = eachDay(range);
   const prevDays = compare ? eachDay(previous) : [];
@@ -544,7 +633,19 @@ export async function getRealClientDashboard(
     );
     return realMetricValue(metric, t) ?? 0;
   };
-  const SERIES_KEYS = ["spend", "impressions", "clicks", "ctr", "cpc", "cpm", "reach", "frequency"];
+  const SERIES_KEYS = [
+    "spend",
+    "impressions",
+    "clicks",
+    "ctr",
+    "cpc",
+    "cpm",
+    "reach",
+    "frequency",
+    "inline_link_clicks",
+    "ctr_link",
+    "cpc_link",
+  ];
   const series: Record<string, SeriesPair> = {};
   for (const key of SERIES_KEYS) {
     series[key] = {
@@ -581,12 +682,37 @@ export async function getRealClientDashboard(
     };
   }
 
+  // FEATURE 02A: série diária das demais métricas liberadas do Registry —
+  // mesma fonte (`dayConvTotals`, spend + ações cruas do dia), reaplicando
+  // `computeMetric` (funciona igual para action-sourced e formula/ratio,
+  // já que todo componente que essas fórmulas usam — spend + 1 ação — está
+  // no MESMO totals do dia; nenhuma delas depende de impressions/clicks).
+  const registryDayValue = (
+    m: Map<string, DayConv>,
+    d: string,
+    id: string,
+  ): number => computeMetric(id, dayConvTotals(m, d)) ?? 0;
+  for (const id of REGISTRY_CARD_CHART_IDS) {
+    series[id] = {
+      current: days.map((d) => ({
+        date: d,
+        value: registryDayValue(curConvByDay, d, id),
+      })),
+      previous: compare
+        ? prevDays.map((d) => ({
+            date: d,
+            value: registryDayValue(prevConvByDay, d, id),
+          }))
+        : null,
+    };
+  }
+
   // ---- tabela de campanhas (agregado de período por campanha) --------
   const [{ data: perCampData }, { data: campDailyData }] = await Promise.all([
     supabase
       .from("meta_insights_periodic")
       .select(
-        "entity_id, date_from, date_to, attribution_window, spend, impressions, clicks, reach, actions, action_values, raw_actions, raw_action_values",
+        "entity_id, date_from, date_to, attribution_window, spend, impressions, clicks, inline_link_clicks, reach, frequency, actions, action_values, raw_actions, raw_action_values",
       )
       .eq("client_id", client.id)
       .eq("level", "campaign")
@@ -594,7 +720,7 @@ export async function getRealClientDashboard(
       .in("attribution_window", ATTR_VALUES),
     supabase
       .from("meta_insights_daily")
-      .select("entity_id, date, attribution_window, spend, impressions, clicks, raw_actions, raw_action_values")
+      .select("entity_id, date, attribution_window, spend, impressions, clicks, inline_link_clicks, raw_actions, raw_action_values")
       .eq("client_id", client.id)
       .eq("level", "campaign")
       .in("attribution_window", ATTR_VALUES)
@@ -613,6 +739,7 @@ export async function getRealClientDashboard(
     spend: number;
     impressions: number;
     clicks: number;
+    inlineLinkClicks: number;
     raw_actions: Record<string, number>;
     raw_action_values: Record<string, number>;
   }
@@ -629,12 +756,14 @@ export async function getRealClientDashboard(
         spend: 0,
         impressions: 0,
         clicks: 0,
+        inlineLinkClicks: 0,
         raw_actions: {},
         raw_action_values: {},
       } as CampDaily);
     cur.spend += num(r.spend) ?? 0;
     cur.impressions += num(r.impressions) ?? 0;
     cur.clicks += num(r.clicks) ?? 0;
+    cur.inlineLinkClicks += num(r.inline_link_clicks) ?? 0;
     cur.raw_actions = sumRawMaps([cur.raw_actions, r.raw_actions]);
     cur.raw_action_values = sumRawMaps([
       cur.raw_action_values,
@@ -651,9 +780,12 @@ export async function getRealClientDashboard(
           spend: p ? num(p.spend) : (fb?.spend ?? null),
           impressions: p ? num(p.impressions) : (fb?.impressions ?? null),
           clicks: p ? num(p.clicks) : (fb?.clicks ?? null),
-          inlineLinkClicks: null,
+          inlineLinkClicks: p ? num(p.inline_link_clicks) : (fb?.inlineLinkClicks ?? null),
         },
-        p ? { reach: num(p.reach), frequency: null } : null,
+        // reach/frequency: SÓ do agregado periódico EXATO da campanha —
+        // nunca somados do diário (BUG 01/FEATURE 02A #9). Sem `p`: `null`
+        // (indisponível), nunca 0 — a tabela mostra "—".
+        p ? { reach: num(p.reach), frequency: num(p.frequency) } : null,
       );
       const spend = t.spend ?? 0;
       // totais de conversão da campanha: periódico do preset, senão soma do
@@ -669,17 +801,29 @@ export async function getRealClientDashboard(
       for (const id of RELEASED_CONVERSION_METRICS) {
         conversions[id] = conversionMetricValue(id, convT, resultType);
       }
+      // FEATURE 02A: demais colunas liberadas na tabela (cliques no link,
+      // CTR/CPC link, leads/CPL, ecommerce, engajamento) — mesma união de
+      // totais aditivos + ações usada no card do período, por campanha.
+      const campaignAllTotals: MetricTotals = {
+        ...t,
+        actions: convT.actions,
+        actionValues: convT.actionValues,
+      };
+      for (const id of REGISTRY_TABLE_IDS) {
+        conversions[id] = computeMetric(id, campaignAllTotals);
+      }
       return {
         id: c.id,
         name: c.name,
         status: c.status,
         spend,
-        reach: t.reach ?? 0,
+        reach: t.reach,
         impressions: t.impressions ?? 0,
         clicks: t.clicks ?? 0,
         ctr: realMetricValue("ctr", t) ?? 0,
         cpc: realMetricValue("cpc", t) ?? 0,
         cpm: realMetricValue("cpm", t) ?? 0,
+        frequency: t.frequency,
         conversions,
       };
     })

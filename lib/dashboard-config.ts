@@ -1,5 +1,7 @@
 import type { MetricBehavior } from "@/lib/comparison";
 import { RESULT_METRIC_PRESETS } from "@/lib/result-metric";
+import { METRIC_REGISTRY } from "@/lib/metrics/registry";
+import { resultDuplicateFor } from "@/lib/meta/result-metric-resolve";
 import type { ResultMetricConfig, ResultMetricType } from "@/types/domain";
 
 /**
@@ -101,6 +103,36 @@ const RESULT_METRIC_TYPE_SET = new Set<string>(RESULT_METRIC_TYPES);
 const METRIC_BEHAVIOR_SET = new Set<string>(METRIC_BEHAVIORS);
 
 /* ================================================================== */
+/* FEATURE 02A — catálogo único, derivado do Metric Registry           */
+/* ================================================================== */
+/**
+ * `CARD_CATALOG`, `CHART_METRIC_CATALOG` e `TABLE_COLUMN_CATALOG` eram 3
+ * listas mantidas à mão, cada uma com sua própria cópia de label/format —
+ * adicionar 1 métrica exigia lembrar de tocar nas 3 (+ o Registry). Agora as
+ * 3 são DERIVADAS de `lib/metrics/registry.ts` (`dashboardSurfaces` decide
+ * card/chart/table; `label`/`format`/`behavior` vêm de lá) — uma métrica só
+ * precisa ser adicionada/ajustada em UM lugar.
+ *
+ * `format`/`behavior` do Registry usam o MESMO vocabulário do editor (ver
+ * comentário em `lib/metrics/registry.ts`), então não há tradução a fazer.
+ *
+ * Exports/shape (`CatalogEntry`, `ChartMetricEntry`, `CARD_CATALOG` etc.)
+ * continuam os MESMOS de antes — zero mudança no resto da aplicação
+ * (`dashboard-editor.tsx`, `chart-list-editor.tsx`, `campaigns-table.tsx`,
+ * `parseDashboardConfig`/`sanitizeDashboardConfigInput`) além do conteúdo.
+ */
+
+/** id do Registry -> key usada em card/tabela (`spend` -> `investment`; único
+ * alias hoje). Gráficos usam o id do Registry diretamente (sempre usaram). */
+const REGISTRY_ID_TO_CARD_KEY: Readonly<Record<string, string>> = {
+  spend: "investment",
+};
+
+function cardKeyFor(registryId: string): string {
+  return REGISTRY_ID_TO_CARD_KEY[registryId] ?? registryId;
+}
+
+/* ================================================================== */
 /* Catálogo de métricas de gráfico                                     */
 /* ================================================================== */
 
@@ -122,29 +154,21 @@ export interface ChartMetricEntry {
   seriesKey?: string;
 }
 
-export const CHART_METRIC_CATALOG: readonly ChartMetricEntry[] = [
-  { key: "spend", label: "Investimento", context: "time_series", format: "currency", behavior: "neutral", seriesKey: "spend" },
-  { key: "results", label: "Resultados", context: "time_series", format: "number", behavior: "higher_is_better", usesResultMetricBehavior: true, seriesKey: "results" },
-  { key: "cost_per_result", label: "Custo por resultado", context: "time_series", format: "currency", behavior: "lower_is_better", seriesKey: "cost_per_result" },
-  { key: "reach", label: "Alcance", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "reach" },
-  { key: "impressions", label: "Impressões", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "impressions" },
-  { key: "clicks", label: "Cliques", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "clicks" },
-  { key: "ctr", label: "CTR", context: "time_series", format: "percent", behavior: "higher_is_better", seriesKey: "ctr" },
-  { key: "cpc", label: "CPC", context: "time_series", format: "currency", behavior: "lower_is_better", seriesKey: "cpc" },
-  { key: "cpm", label: "CPM", context: "time_series", format: "currency", behavior: "neutral", seriesKey: "cpm" },
-  { key: "frequency", label: "Frequência", context: "time_series", format: "decimal", behavior: "neutral", seriesKey: "frequency" },
-  // Mensageria — LIBERADAS (validadas com dados reais no Atacado do Chinelo).
-  // Fonte: meta_insights_daily (série) / meta_insights_periodic (totais).
-  { key: "messaging_conversations_started", label: "Conversas iniciadas", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "messaging_conversations_started" },
-  { key: "cost_per_conversation", label: "Custo por conversa iniciada", context: "time_series", format: "currency", behavior: "lower_is_better", seriesKey: "cost_per_conversation" },
-  { key: "messaging_contacts_total", label: "Total de contatos", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "messaging_contacts_total" },
-  { key: "messaging_contacts_new", label: "Novos contatos", context: "time_series", format: "number", behavior: "higher_is_better", seriesKey: "messaging_contacts_new" },
-  // Ainda NÃO liberadas — validar em contas adequadas antes:
-  { key: "purchases", label: "Compras", context: "time_series", format: "number", behavior: "higher_is_better", requiresMeta: true },
-  { key: "cpa", label: "CPA", context: "time_series", format: "currency", behavior: "lower_is_better", requiresMeta: true },
-  { key: "revenue", label: "Receita", context: "time_series", format: "currency", behavior: "higher_is_better", requiresMeta: true },
-  { key: "roas", label: "ROAS", context: "time_series", format: "decimal", behavior: "higher_is_better", requiresMeta: true },
-];
+function deriveChartCatalog(): ChartMetricEntry[] {
+  return METRIC_REGISTRY.filter((def) => def.dashboardSurfaces.includes("chart")).map(
+    (def) => ({
+      key: def.id,
+      label: def.label,
+      context: "time_series" as const,
+      format: def.format,
+      behavior: def.behavior,
+      seriesKey: def.id,
+      ...(def.id === "results" ? { usesResultMetricBehavior: true } : {}),
+    }),
+  );
+}
+
+export const CHART_METRIC_CATALOG: readonly ChartMetricEntry[] = deriveChartCatalog();
 
 const CHART_METRIC_BY_KEY = new Map(CHART_METRIC_CATALOG.map((m) => [m.key, m]));
 
@@ -245,46 +269,28 @@ export interface CatalogEntry {
   requiresMeta?: boolean;
 }
 
-export const CARD_CATALOG: readonly CatalogEntry[] = [
-  { key: "investment", label: "Investimento" },
-  { key: "results", label: "Resultados" },
-  { key: "cost_per_result", label: "Custo por resultado" },
-  { key: "reach", label: "Alcance" },
-  { key: "impressions", label: "Impressões" },
-  { key: "clicks", label: "Cliques" },
-  { key: "ctr", label: "CTR" },
-  { key: "cpc", label: "CPC" },
-  { key: "cpm", label: "CPM" },
-  { key: "frequency", label: "Frequência" },
-  // Mensageria — LIBERADAS (validadas com dados reais):
-  { key: "messaging_conversations_started", label: "Conversas iniciadas" },
-  { key: "cost_per_conversation", label: "Custo por conversa iniciada" },
-  { key: "messaging_contacts_total", label: "Total de contatos" },
-  { key: "messaging_contacts_new", label: "Novos contatos" },
-  // Ainda NÃO liberadas:
-  { key: "purchases", label: "Compras", requiresMeta: true },
-  { key: "cpa", label: "CPA", requiresMeta: true },
-  { key: "revenue", label: "Receita", requiresMeta: true },
-  { key: "roas", label: "ROAS", requiresMeta: true },
-];
+function deriveCardCatalog(): CatalogEntry[] {
+  return METRIC_REGISTRY.filter((def) => def.dashboardSurfaces.includes("card")).map(
+    (def) => ({ key: cardKeyFor(def.id), label: def.label }),
+  );
+}
 
-export const TABLE_COLUMN_CATALOG: readonly CatalogEntry[] = [
-  { key: "campaign", label: "Campanha" },
-  { key: "status", label: "Status" },
-  { key: "investment", label: "Investimento" },
-  { key: "results", label: "Resultados" },
-  { key: "cost_per_result", label: "Custo por resultado" },
-  { key: "messaging_conversations_started", label: "Conversas iniciadas" },
-  { key: "cost_per_conversation", label: "Custo por conversa iniciada" },
-  { key: "messaging_contacts_total", label: "Total de contatos" },
-  { key: "messaging_contacts_new", label: "Novos contatos" },
-  { key: "reach", label: "Alcance" },
-  { key: "impressions", label: "Impressões" },
-  { key: "clicks", label: "Cliques" },
-  { key: "ctr", label: "CTR" },
-  { key: "cpc", label: "CPC" },
-  { key: "cpm", label: "CPM" },
-];
+export const CARD_CATALOG: readonly CatalogEntry[] = deriveCardCatalog();
+
+function deriveTableColumnCatalog(): CatalogEntry[] {
+  const metricColumns = METRIC_REGISTRY.filter((def) =>
+    def.dashboardSurfaces.includes("table"),
+  ).map((def) => ({ key: cardKeyFor(def.id), label: def.label }));
+  // "Campanha"/"Status" não são métricas do Registry (são identidade/estado
+  // da campanha) — únicas 2 entradas estruturais mantidas fora dele.
+  return [
+    { key: "campaign", label: "Campanha" },
+    { key: "status", label: "Status" },
+    ...metricColumns,
+  ];
+}
+
+export const TABLE_COLUMN_CATALOG: readonly CatalogEntry[] = deriveTableColumnCatalog();
 
 export const REQUIRED_TABLE_COLUMN = "campaign";
 
@@ -804,28 +810,62 @@ export function enabledKeys(items: readonly LayoutItem[]): string[] {
   return items.filter((i) => i.enabled).map((i) => i.key);
 }
 
-/** Chave do card -> chave da métrica em ClientDashboardData.metrics. */
-export const CARD_METRIC_KEY: Record<string, string> = {
-  investment: "investment",
-  results: "results",
-  cost_per_result: "cost_per_result",
-  reach: "reach",
-  impressions: "impressions",
-  clicks: "clicks",
-  ctr: "ctr",
-  cpc: "cpc",
-  cpm: "cpm",
-  frequency: "frequency",
-  messaging_conversations_started: "messaging_conversations_started",
-  cost_per_conversation: "cost_per_conversation",
-  messaging_contacts_total: "messaging_contacts_total",
-  messaging_contacts_new: "messaging_contacts_new",
-};
+/** Chave do card -> chave da métrica em ClientDashboardData.metrics. Sempre
+ * identidade hoje (card key === id do Registry, já alias-traduzido) — gerado
+ * do catálogo em vez de mantido à mão. */
+export const CARD_METRIC_KEY: Readonly<Record<string, string>> = Object.fromEntries(
+  CARD_CATALOG.map((c) => [c.key, c.key]),
+);
 
 export function cardLabel(key: string, metric: ResultMetricConfig): string {
   if (key === "results") return metric.resultLabel;
   if (key === "cost_per_result") return metric.costLabel;
   return catalogLabel(CARD_CATALOG, key);
+}
+
+/**
+ * FEATURE 02A — remove da lista de keys habilitadas a métrica CONCRETA que
+ * duplicaria "results"/"cost_per_result" (ver `resultDuplicateFor`,
+ * `lib/meta/result-metric-resolve.ts`). Só age quando "results"/
+ * "cost_per_result" ESTÃO habilitados — se o cliente nunca ligou o card
+ * genérico, a métrica concreta aparece normalmente (nada a deduplicar).
+ *
+ * ÚNICA função que decide a deduplicação — consumida por `dashboard-content.tsx`
+ * (cards + colunas de tabela, admin e share, mesmo componente) e por
+ * `dashboard-editor.tsx` (para avisar o usuário). NORMALIZA EM LEITURA:
+ * configs antigas salvas com os dois habilitados simultaneamente deixam de
+ * duplicar sem precisar de migration — o próximo save já persiste limpo.
+ */
+export function dedupeResultDuplicates(
+  keys: readonly string[],
+  resultType: ResultMetricType,
+): string[] {
+  const enabled = new Set(keys);
+  const dup = resultDuplicateFor(resultType);
+  if (!dup) return [...keys];
+  return keys.filter((k) => {
+    if (enabled.has("results") && k === dup.valueMetricId) return false;
+    if (enabled.has("cost_per_result") && k === dup.costMetricId) return false;
+    return true;
+  });
+}
+
+/**
+ * Keys (valor + custo, quando existir) que representam o MESMO resultado que
+ * "results"/"cost_per_result" no tipo configurado — para o editor AVISAR o
+ * usuário junto do checkbox (não remove nada da lista do editor; a remoção
+ * do card/coluna renderizado é `dedupeResultDuplicates`, acima).
+ */
+export function resultEquivalentKeys(
+  resultType: ResultMetricType,
+): ReadonlySet<string> {
+  const dup = resultDuplicateFor(resultType);
+  if (!dup) return new Set();
+  return new Set(
+    [dup.valueMetricId, dup.costMetricId].filter(
+      (x): x is string => typeof x === "string",
+    ),
+  );
 }
 
 /* ---- gráficos ---- */

@@ -19,13 +19,19 @@ import {
   formatCompactNumber,
   formatCurrency,
   formatDate,
+  formatDecimal,
   formatNumber,
+  formatPercent,
   formatShortDate,
   formatSignedPercent,
 } from "@/lib/format";
 import type { ZippedPoint } from "@/lib/series";
 
-export type TrendValueFormat = "currency" | "number";
+// FEATURE 02A: eixo/tooltip coerentes com o `format` real da métrica —
+// antes só currency/number existiam aqui, e todo % (CTR/CTR link) e decimal
+// (ROAS/frequência) virava número cru sem unidade no próprio gráfico (o
+// card já formatava certo; só o gráfico ficava genérico).
+export type TrendValueFormat = "currency" | "number" | "percent" | "decimal";
 export type TrendVariant = "area" | "line" | "bar" | "horizontal_bar";
 
 interface TrendChartProps {
@@ -41,11 +47,15 @@ interface TrendChartProps {
 const AXIS_FORMATTERS: Record<TrendValueFormat, (value: number) => string> = {
   currency: formatCompactCurrency,
   number: formatCompactNumber,
+  percent: (v) => formatPercent(v, 1),
+  decimal: (v) => formatDecimal(v, 2),
 };
 
 const TOOLTIP_FORMATTERS: Record<TrendValueFormat, (value: number) => string> = {
   currency: formatCurrency,
   number: formatNumber,
+  percent: (v) => formatPercent(v, 2),
+  decimal: (v) => formatDecimal(v, 2),
 };
 
 const SENTIMENT_COLOR: Record<string, string> = {

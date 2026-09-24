@@ -119,6 +119,44 @@ export const ACTION_METRIC_SPECS: readonly ActionMetricSpec[] = [
     actionTypes: ["link_click"],
     combine: "priority",
   },
+  // ---- FEATURE 02A: engajamento + vídeo simples ------------------------
+  // Semântica confirmada por auditoria de dados reais (Atacado do Chinelo,
+  // DEV) + nomenclatura padrão da Meta Marketing API. `combine: "priority"`
+  // em todos — os pares abaixo são o MESMO evento por dois `action_type`
+  // (visto em DEV com contagens idênticas), nunca somados.
+  {
+    metricId: "post_engagement",
+    actionTypes: ["post_engagement", "page_engagement"],
+    combine: "priority",
+    note: "post_engagement é o rótulo padrão do Ads Manager para 'Engajamento com a publicação'; page_engagement observado com a mesma contagem nos dados reais — tratado como o mesmo evento, nunca somado.",
+  },
+  {
+    metricId: "post_reactions",
+    actionTypes: ["post_reaction"],
+    combine: "priority",
+    note: "reações à publicação (like, amei, uau...). NÃO combinado com onsite_conversion.post_net_like (visto em DEV com a mesma contagem, mas semântica de 'líquido de descurtidas' não confirmada como idêntica).",
+  },
+  {
+    metricId: "post_comments",
+    actionTypes: ["comment"],
+    combine: "priority",
+  },
+  {
+    metricId: "post_saves",
+    actionTypes: ["onsite_conversion.post_save", "onsite_conversion.post_net_save"],
+    combine: "priority",
+    note: "post_save = salvamentos; post_net_save (líquido de dessalvamentos) só como fallback quando post_save não vier.",
+  },
+  // NÃO mapeado nesta rodada: `action_type=post` ("Compartilhamentos"). Visto
+  // em DEV (599 linhas), mas o nome cru é genérico demais para confirmar a
+  // semântica só pelo código/dados — ver FEATURE 02A, item "Status de
+  // Compartilhamentos" na entrega. Fica de fora até confirmação mais forte.
+  {
+    metricId: "video_views",
+    actionTypes: ["video_view"],
+    combine: "priority",
+    note: "contagem simples de reprodução (sem limiar de tempo) — visualizações de 3s/ThruPlay/percentuais exigem novos campos da Graph API (FEATURE 02B).",
+  },
 ];
 
 /** Valor monetário (array `action_values[]`). */

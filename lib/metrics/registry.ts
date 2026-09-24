@@ -239,6 +239,8 @@ const TS_VIS: readonly MetricVisualization[] = [
 
 /** Exposta no editor hoje (card + gráfico) — deve bater com dashboard-config. */
 const CARD_CHART: readonly DashboardSurface[] = ["card", "chart"];
+/** Exposta em card + gráfico + tabela de campanhas (valor por campanha seguro). */
+const CARD_CHART_TABLE: readonly DashboardSurface[] = ["card", "chart", "table"];
 const HIDDEN: readonly DashboardSurface[] = [];
 
 /* ------------------------------------------------------------------ */
@@ -406,9 +408,11 @@ const DEFINITIONS: readonly MetricDefinition[] = [
   // ---- meta_native: colunas fixas ----
   column("spend", "Investimento", "Valor gasto no período, na moeda da conta.", "currency", "neutral", { dashboardSurfaces: CARD_CHART, relatedMetrics: ["impressions", "cpm", "reach"] }),
   column("impressions", "Impressões", "Vezes que os anúncios foram exibidos.", "number", "higher_is_better", { dashboardSurfaces: CARD_CHART, funnelEligible: true }),
-  column("reach", "Alcance", "Pessoas únicas alcançadas. Não é somável por dia — o total do período vem de consulta agregada.", "number", "higher_is_better", { aggregation: "last", periodSource: "periodic_only", aggregationClass: "unique_non_additive", dashboardSurfaces: CARD_CHART, relatedMetrics: ["impressions", "frequency"] }),
+  column("reach", "Alcance", "Pessoas únicas alcançadas. Não é somável por dia — o total do período vem de consulta agregada.", "number", "higher_is_better", { aggregation: "last", periodSource: "periodic_only", aggregationClass: "unique_non_additive", dashboardSurfaces: CARD_CHART_TABLE, relatedMetrics: ["impressions", "frequency"] }),
   column("clicks", "Cliques", "Todos os cliques (inclui reações, comentários etc.).", "number", "higher_is_better", { dashboardSurfaces: CARD_CHART, funnelEligible: true }),
-  column("inline_link_clicks", "Cliques no link", "Cliques que levaram ao destino do anúncio.", "number", "higher_is_better", { funnelEligible: true }),
+  // FEATURE 02A: já coletado e armazenado (campo `inline_link_clicks` da
+  // Meta), só não estava exposto em nenhum catálogo.
+  column("inline_link_clicks", "Cliques no link", "Cliques que levaram ao destino do anúncio.", "number", "higher_is_better", { funnelEligible: true, dashboardSurfaces: CARD_CHART_TABLE }),
   column("video_3s_views", "Reproduções de 3s", "Reproduções de vídeo de pelo menos 3 segundos.", "number", "higher_is_better", { levels: AD_DOWN_LEVELS, availability: "depends_on_account", funnelEligible: true }),
   column("video_thruplays", "ThruPlays", "Reproduções completas ou de pelo menos 15 segundos.", "number", "higher_is_better", { levels: AD_DOWN_LEVELS, availability: "depends_on_account", funnelEligible: true }),
   // `weighted_avg` seria a classe teórica, MAS o denominador de peso correto
@@ -437,29 +441,76 @@ const DEFINITIONS: readonly MetricDefinition[] = [
     isDerived: true,
     configDriven: true,
     followsClientResultMetric: true,
-    dashboardSurfaces: CARD_CHART,
+    dashboardSurfaces: CARD_CHART_TABLE,
     aggregationClass: "additive",
     unit: "count",
     chartRoles: ["kpi", "timeseries", "table", "categorical", "funnel", "intelligence"],
     funnelEligible: true,
     breakdownsCompatible: [],
   },
-  conversion("leads", "Leads"),
-  conversion("purchases", "Compras", { dashboardSurfaces: CARD_CHART }),
+  // FEATURE 02A: pipeline já suportava (action_type mapeado, anti-dupla-
+  // contagem já resolvido) — só não estava exposta em nenhum catálogo.
+  conversion("leads", "Leads", { dashboardSurfaces: CARD_CHART_TABLE }),
+  // Sem `purchase`/`action_values` reais nos clientes DEV hoje (Atacado do
+  // Chinelo, Up Assessoria) — não é bloqueio: ausência de evento ≠ métrica
+  // indisponível (mesma semântica já usada em todo o dashboard). Liberada no
+  // catálogo; mostra "—"/indisponível até um cliente com evento real.
+  conversion("purchases", "Compras", { dashboardSurfaces: CARD_CHART_TABLE }),
   // Mensageria: 3 métricas DISTINTAS (não aliases) — cada uma = 1 action_type.
   // LIBERADAS no dashboard real (validadas com dados reais).
-  conversion("messaging_conversations_started", "Conversas iniciadas", { dashboardSurfaces: CARD_CHART }),
-  conversion("messaging_contacts_total", "Total de contatos", { dashboardSurfaces: CARD_CHART }),
-  conversion("messaging_contacts_new", "Novos contatos", { dashboardSurfaces: CARD_CHART }),
+  conversion("messaging_conversations_started", "Conversas iniciadas", { dashboardSurfaces: CARD_CHART_TABLE }),
+  conversion("messaging_contacts_total", "Total de contatos", { dashboardSurfaces: CARD_CHART_TABLE }),
+  conversion("messaging_contacts_new", "Novos contatos", { dashboardSurfaces: CARD_CHART_TABLE }),
   // `conversations` (legado / compat) = ponteiro para "conversas iniciadas".
   // HIDDEN: não é opção visual do editor (o id novo a substitui).
   formula("conversations", "Conversas iniciadas", "number", "higher_is_better", { op: "identity", of: "messaging_conversations_started" }, { aggregation: "sum", aggregationClass: "additive", funnelEligible: true, dashboardSurfaces: HIDDEN, availability: "depends_on_account", requiresEvent: true }),
-  conversion("registrations", "Cadastros"),
-  conversion("appointments", "Agendamentos"),
-  conversion("add_to_cart", "Adições ao carrinho"),
-  conversion("initiate_checkout", "Finalizações iniciadas"),
-  conversion("landing_page_views", "Visualizações da página"),
+  // Cadastros/Agendamentos: liberados em card+gráfico. Sem coluna de tabela
+  // nesta rodada (fora do pedido explícito de FEATURE 02A #9).
+  conversion("registrations", "Cadastros", { dashboardSurfaces: CARD_CHART }),
+  conversion("appointments", "Agendamentos", { dashboardSurfaces: CARD_CHART }),
+  conversion("add_to_cart", "Adições ao carrinho", { dashboardSurfaces: CARD_CHART_TABLE }),
+  conversion("initiate_checkout", "Finalizações iniciadas", { dashboardSurfaces: CARD_CHART_TABLE }),
+  conversion("landing_page_views", "Visualizações da página", { dashboardSurfaces: CARD_CHART_TABLE }),
+  // `link_clicks` (ação, distinta da coluna `inline_link_clicks`): fora do
+  // pedido desta rodada — mantida HIDDEN para não introduzir um 2º conceito
+  // de "cliques no link" ambíguo (ver FEATURE 02 audit, item 7 — mesma
+  // classe de risco que gerou a duplicação de "Conversas iniciadas").
   conversion("link_clicks", "Cliques no link (ação)"),
+  // FEATURE 02A: engajamento — só action_types com semântica confirmada
+  // (ver lib/meta/action-type-map.ts). "Compartilhamentos" (`action_type=post`)
+  // deliberadamente FORA — ver nota na entrega da rodada.
+  conversion("post_engagement", "Engajamentos", {
+    description: "Interações com a publicação do anúncio (reações, comentários, compartilhamentos, cliques) no período.",
+    requiresEvent: false,
+    availability: "stable",
+    dashboardSurfaces: CARD_CHART_TABLE,
+  }),
+  conversion("post_reactions", "Reações", {
+    description: "Reações à publicação do anúncio (curtir, amei, uau...) no período.",
+    requiresEvent: false,
+    availability: "stable",
+    dashboardSurfaces: CARD_CHART_TABLE,
+  }),
+  conversion("post_comments", "Comentários", {
+    description: "Comentários na publicação do anúncio no período.",
+    requiresEvent: false,
+    availability: "stable",
+    dashboardSurfaces: CARD_CHART_TABLE,
+  }),
+  conversion("post_saves", "Salvamentos", {
+    description: "Vezes que a publicação do anúncio foi salva no período.",
+    requiresEvent: false,
+    availability: "stable",
+    dashboardSurfaces: CARD_CHART_TABLE,
+  }),
+  // Vídeo ATUAL (contagem simples, sem limiar de tempo). 3s dedicada,
+  // ThruPlay e percentuais exigem novos campos da Graph API — FEATURE 02B.
+  conversion("video_views", "Visualizações de vídeo", {
+    description: "Reproduções de vídeo registradas no período (contagem simples, sem limiar de tempo).",
+    requiresEvent: false,
+    availability: "stable",
+    dashboardSurfaces: CARD_CHART,
+  }),
   {
     id: "revenue",
     label: "Receita",
@@ -479,7 +530,7 @@ const DEFINITIONS: readonly MetricDefinition[] = [
     availability: "depends_on_account",
     requiresEvent: true,
     isDerived: false,
-    dashboardSurfaces: CARD_CHART,
+    dashboardSurfaces: CARD_CHART_TABLE,
     aggregationClass: "additive",
     unit: "currency",
     chartRoles: ["kpi", "timeseries", "table", "categorical", "intelligence"],
@@ -490,16 +541,22 @@ const DEFINITIONS: readonly MetricDefinition[] = [
 
   // ---- calculated: fórmulas sobre totais brutos ----
   formula("ctr", "CTR", "percent", "higher_is_better", { op: "ratio", numerator: "clicks", denominator: "impressions", multiplier: 100 }, { dashboardSurfaces: CARD_CHART, significanceMetric: "impressions", relatedMetrics: ["impressions", "clicks", "cpm"] }),
-  formula("ctr_link", "CTR (link)", "percent", "higher_is_better", { op: "ratio", numerator: "inline_link_clicks", denominator: "impressions", multiplier: 100 }, { significanceMetric: "impressions", relatedMetrics: ["impressions", "inline_link_clicks", "cpm"] }),
+  formula("ctr_link", "CTR (link)", "percent", "higher_is_better", { op: "ratio", numerator: "inline_link_clicks", denominator: "impressions", multiplier: 100 }, { dashboardSurfaces: CARD_CHART_TABLE, significanceMetric: "impressions", relatedMetrics: ["impressions", "inline_link_clicks", "cpm"] }),
   formula("cpc", "CPC", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "clicks" }, { dashboardSurfaces: CARD_CHART, significanceMetric: "clicks", relatedMetrics: ["spend", "clicks", "ctr", "cpm"] }),
-  formula("cpc_link", "CPC (link)", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "inline_link_clicks" }, { significanceMetric: "inline_link_clicks", relatedMetrics: ["spend", "inline_link_clicks", "ctr_link", "cpm"] }),
+  formula("cpc_link", "CPC (link)", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "inline_link_clicks" }, { dashboardSurfaces: CARD_CHART_TABLE, significanceMetric: "inline_link_clicks", relatedMetrics: ["spend", "inline_link_clicks", "ctr_link", "cpm"] }),
   formula("cpm", "CPM", "currency", "neutral", { op: "ratio", numerator: "spend", denominator: "impressions", multiplier: 1000 }, { dashboardSurfaces: CARD_CHART, significanceMetric: "impressions", relatedMetrics: ["spend", "impressions", "frequency", "reach"] }),
-  formula("frequency", "Frequência", "decimal", "neutral", { op: "ratio", numerator: "impressions", denominator: "reach" }, { periodSource: "periodic_only", aggregationClass: "unique_non_additive", unit: "ratio", dashboardSurfaces: CARD_CHART, relatedMetrics: ["impressions", "reach"] }),
-  formula("cost_per_result", "Custo por resultado", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "results" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true, configDriven: true, significanceMetric: "results", relatedMetrics: ["spend", "results", "ctr", "cpm", "frequency"] }),
-  formula("cpl", "Custo por lead", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "leads" }, { availability: "depends_on_account", requiresEvent: true, significanceMetric: "leads", relatedMetrics: ["spend", "leads", "ctr", "cpm", "frequency"] }),
-  formula("cpa", "CPA", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "purchases" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true, significanceMetric: "purchases", relatedMetrics: ["spend", "purchases", "ctr", "cpm", "frequency"] }),
-  formula("roas", "ROAS", "decimal", "higher_is_better", { op: "ratio", numerator: "revenue", denominator: "spend" }, { unit: "ratio", dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true, significanceMetric: "purchases", relatedMetrics: ["spend", "revenue", "purchases", "cpa", "ctr"] }),
-  formula("cost_per_conversation", "Custo por conversa", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "conversations" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: true, significanceMetric: "conversations", relatedMetrics: ["spend", "conversations", "ctr", "cpm"] }),
+  formula("frequency", "Frequência", "decimal", "neutral", { op: "ratio", numerator: "impressions", denominator: "reach" }, { periodSource: "periodic_only", aggregationClass: "unique_non_additive", unit: "ratio", dashboardSurfaces: CARD_CHART_TABLE, relatedMetrics: ["impressions", "reach"] }),
+  formula("cost_per_result", "Custo por resultado", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "results" }, { dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, configDriven: true, significanceMetric: "results", relatedMetrics: ["spend", "results", "ctr", "cpm", "frequency"] }),
+  formula("cpl", "Custo por lead", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "leads" }, { dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, significanceMetric: "leads", relatedMetrics: ["spend", "leads", "ctr", "cpm", "frequency"] }),
+  formula("cpa", "CPA", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "purchases" }, { dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, significanceMetric: "purchases", relatedMetrics: ["spend", "purchases", "ctr", "cpm", "frequency"] }),
+  formula("roas", "ROAS", "decimal", "higher_is_better", { op: "ratio", numerator: "revenue", denominator: "spend" }, { unit: "ratio", dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, significanceMetric: "purchases", relatedMetrics: ["spend", "revenue", "purchases", "cpa", "ctr"] }),
+  formula("cost_per_conversation", "Custo por conversa iniciada", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "conversations" }, { dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, significanceMetric: "conversations", relatedMetrics: ["spend", "conversations", "ctr", "cpm"] }),
+  // FEATURE 02A: custos novos — mesma regra dos custos existentes (ratio,
+  // recompute_from_components; ambos operandos já aditivos e armazenados).
+  formula("cost_per_landing_page_view", "Custo por LPV", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "landing_page_views" }, { dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, significanceMetric: "landing_page_views", relatedMetrics: ["spend", "landing_page_views", "ctr", "cpm"] }),
+  formula("cost_per_add_to_cart", "Custo por adição ao carrinho", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "add_to_cart" }, { dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, significanceMetric: "add_to_cart", relatedMetrics: ["spend", "add_to_cart", "cost_per_initiate_checkout"] }),
+  formula("cost_per_initiate_checkout", "Custo por checkout iniciado", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "initiate_checkout" }, { dashboardSurfaces: CARD_CHART_TABLE, availability: "depends_on_account", requiresEvent: true, significanceMetric: "initiate_checkout", relatedMetrics: ["spend", "initiate_checkout", "cost_per_add_to_cart", "cpa"] }),
+  formula("cost_per_video_view", "Custo por visualização de vídeo", "currency", "lower_is_better", { op: "ratio", numerator: "spend", denominator: "video_views" }, { dashboardSurfaces: CARD_CHART, availability: "depends_on_account", requiresEvent: false, significanceMetric: "video_views", relatedMetrics: ["spend", "video_views"] }),
   formula("hook_rate", "Hook rate", "percent", "higher_is_better", { op: "ratio", numerator: "video_3s_views", denominator: "impressions", multiplier: 100 }, { levels: AD_DOWN_LEVELS, availability: "depends_on_account", significanceMetric: "impressions", relatedMetrics: ["video_3s_views", "impressions", "thruplay_rate"] }),
   formula("thruplay_rate", "Taxa de ThruPlay", "percent", "higher_is_better", { op: "ratio", numerator: "video_thruplays", denominator: "impressions", multiplier: 100 }, { levels: AD_DOWN_LEVELS, availability: "depends_on_account", significanceMetric: "impressions", relatedMetrics: ["video_thruplays", "impressions", "hook_rate"] }),
 
@@ -638,4 +695,9 @@ export const CANONICAL_CONVERSION_METRIC_IDS: readonly string[] = [
   "landing_page_views",
   "link_clicks",
   "revenue",
+  "post_engagement",
+  "post_reactions",
+  "post_comments",
+  "post_saves",
+  "video_views",
 ];

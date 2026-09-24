@@ -19,6 +19,7 @@ import {
   changeChartMetric,
   chartMetricLabel,
   compatibleVisualizations,
+  dedupeResultDuplicates,
   defaultChartTitle,
   enabledKeys,
   isChartCombinationValid,
@@ -26,6 +27,7 @@ import {
   newChartConfig,
   parseDashboardConfig,
   removeChart,
+  resultEquivalentKeys,
   resultMetricTypeLabel,
   sanitizeDashboardConfigInput,
   toggleItem,
@@ -163,13 +165,14 @@ describe("migração v1 -> v2", () => {
 /* ================= métricas e visualizações válidas ================= */
 
 describe("catálogos de métrica e visualização", () => {
-  it("métricas ainda NÃO liberadas ficam marcadas requiresMeta", () => {
-    // Leads/CPL/Compras/CPA/Receita/ROAS seguem bloqueadas até validar.
-    const future = ["purchases", "cpa", "revenue", "roas"];
+  it("FEATURE 02A: métricas ainda NÃO suportadas (02B — exigem novo campo da Graph API) ficam ausentes/requiresMeta", () => {
+    // vídeo avançado (3s dedicada, ThruPlay, percentuais) exige ampliar a
+    // coleta da Meta — fora do escopo desta rodada.
+    const future = ["video_3s_views", "video_thruplays", "video_avg_time_watched", "hook_rate", "thruplay_rate"];
     for (const key of future) {
-      expect(CHART_METRIC_CATALOG.find((m) => m.key === key)?.requiresMeta).toBe(true);
+      expect(CHART_METRIC_CATALOG.find((m) => m.key === key), key).toBeUndefined();
     }
-    // Mensageria liberada não está mais em requiresMeta:
+    // FEATURE 02A: pipeline já suportava — agora liberadas, sem requiresMeta.
     for (const key of [
       "messaging_conversations_started",
       "cost_per_conversation",
@@ -177,11 +180,33 @@ describe("catálogos de métrica e visualização", () => {
       "messaging_contacts_new",
       "results",
       "cost_per_result",
+      "leads",
+      "cpl",
+      "purchases",
+      "cpa",
+      "revenue",
+      "roas",
+      "landing_page_views",
+      "cost_per_landing_page_view",
+      "add_to_cart",
+      "cost_per_add_to_cart",
+      "initiate_checkout",
+      "cost_per_initiate_checkout",
+      "inline_link_clicks",
+      "ctr_link",
+      "cpc_link",
+      "post_engagement",
+      "post_reactions",
+      "post_comments",
+      "post_saves",
+      "video_views",
     ]) {
-      expect(CHART_METRIC_CATALOG.find((m) => m.key === key)?.requiresMeta).toBeFalsy();
+      expect(CHART_METRIC_CATALOG.find((m) => m.key === key)?.requiresMeta, key).toBeFalsy();
     }
-    // `conversations` genérico sumiu da seleção visual de gráficos:
+    // `conversations` genérico (alias) e `post` (compartilhamentos, semântica
+    // não confirmada nesta rodada) continuam fora da seleção visual:
     expect(CHART_METRIC_CATALOG.find((m) => m.key === "conversations")).toBeUndefined();
+    expect(CHART_METRIC_CATALOG.some((m) => m.label.toLowerCase().includes("compartilhamento"))).toBe(false);
     expect(AVAILABLE_CHART_METRICS.every((m) => !m.requiresMeta)).toBe(true);
   });
 
@@ -206,9 +231,10 @@ describe("catálogos de métrica e visualização", () => {
   it("combinações incompatíveis são rejeitadas", () => {
     expect(isChartCombinationValid("spend", "pie")).toBe(false); // não implementada
     expect(isChartCombinationValid("spend", "donut")).toBe(false); // nunca p/ série temporal
-    expect(isChartCombinationValid("purchases", "line")).toBe(false); // sem fonte
+    expect(isChartCombinationValid("video_3s_views", "line")).toBe(false); // sem fonte (02B)
     expect(isChartCombinationValid("desconhecida", "line")).toBe(false);
     expect(isChartCombinationValid("spend", "area")).toBe(true);
+    expect(isChartCombinationValid("purchases", "line")).toBe(true); // FEATURE 02A: liberada
   });
 });
 
@@ -283,7 +309,15 @@ describe("edição de gráficos", () => {
 
   it("trocar para métrica sem fonte é ignorado", () => {
     const charts = [newChartConfig("spend")];
-    expect(changeChartMetric(charts, charts[0].id, "roas")).toBe(charts);
+    // FEATURE 02A: "roas" foi liberada — usa um id genuinamente sem fonte
+    // ainda (02B, vídeo avançado) para este caso.
+    expect(changeChartMetric(charts, charts[0].id, "video_3s_views")).toBe(charts);
+  });
+
+  it("FEATURE 02A: trocar para roas/purchases agora é ACEITO (métricas liberadas)", () => {
+    const charts = [newChartConfig("spend")];
+    const next = changeChartMetric(charts, charts[0].id, "roas");
+    expect(next[0].metric).toBe("roas");
   });
 });
 
@@ -321,12 +355,20 @@ describe("sanitizeDashboardConfigInput — gráficos", () => {
     ).toMatchObject({ ok: false });
   });
 
-  it("rejeita métrica que depende da Meta", () => {
+  it("rejeita métrica que depende da Meta (02B — vídeo avançado)", () => {
+    expect(
+      sanitizeDashboardConfigInput(
+        withCharts([{ id: "a", metric: "video_3s_views", visualization: "line", title: "3s", enabled: true }]),
+      ),
+    ).toMatchObject({ ok: false });
+  });
+
+  it("FEATURE 02A: aceita gráfico de ROAS (métrica liberada)", () => {
     expect(
       sanitizeDashboardConfigInput(
         withCharts([{ id: "a", metric: "roas", visualization: "line", title: "ROAS", enabled: true }]),
       ),
-    ).toMatchObject({ ok: false });
+    ).toMatchObject({ ok: true });
   });
 
   it("rejeita visualização não implementada", () => {
@@ -654,8 +696,9 @@ describe("labels amigáveis (IDs internos nunca viram rótulo)", () => {
   });
 });
 
-/* ====== liberação de mensageria no dashboard real (cards/gráficos/colunas) ====== */
+/* ====== FEATURE 02A — catálogo único derivado do Registry ====== */
 
+/** Liberadas nesta rodada — pipeline já suportava, só faltava expor. */
 const RELEASED = [
   "results",
   "cost_per_result",
@@ -663,11 +706,39 @@ const RELEASED = [
   "cost_per_conversation",
   "messaging_contacts_total",
   "messaging_contacts_new",
+  "leads",
+  "cpl",
+  "purchases",
+  "cpa",
+  "revenue",
+  "roas",
+  "landing_page_views",
+  "cost_per_landing_page_view",
+  "add_to_cart",
+  "cost_per_add_to_cart",
+  "initiate_checkout",
+  "cost_per_initiate_checkout",
+  "inline_link_clicks",
+  "ctr_link",
+  "cpc_link",
+  "post_engagement",
+  "post_reactions",
+  "post_comments",
+  "post_saves",
 ] as const;
-const STILL_BLOCKED = ["purchases", "cpa", "revenue", "roas"] as const;
+/** Ficam para FEATURE 02B — exigem ampliar a coleta (novos campos da Graph API). */
+const STILL_BLOCKED = [
+  "video_3s_views",
+  "video_thruplays",
+  "video_avg_time_watched",
+  "hook_rate",
+  "thruplay_rate",
+] as const;
+/** Card/coluna-only (sem tabela nesta rodada — fora do pedido explícito). */
+const CARD_CHART_ONLY = ["registrations", "appointments", "video_views", "cost_per_video_view"] as const;
 
-describe("mensageria liberada; Leads/Compras/Receita/ROAS ainda não", () => {
-  it("as 6 métricas liberadas são selecionáveis como card (sem requiresMeta)", () => {
+describe("FEATURE 02A — catálogo único (Registry -> card/chart/table)", () => {
+  it("métricas liberadas são selecionáveis como card (sem requiresMeta)", () => {
     for (const key of RELEASED) {
       const card = CARD_CATALOG.find((c) => c.key === key);
       expect(card, `card ${key}`).toBeDefined();
@@ -675,7 +746,7 @@ describe("mensageria liberada; Leads/Compras/Receita/ROAS ainda não", () => {
     }
   });
 
-  it("as 6 métricas liberadas são selecionáveis como gráfico (com seriesKey)", () => {
+  it("métricas liberadas são selecionáveis como gráfico (com seriesKey)", () => {
     for (const key of RELEASED) {
       const chart = CHART_METRIC_CATALOG.find((c) => c.key === key);
       expect(chart, `chart ${key}`).toBeDefined();
@@ -684,36 +755,48 @@ describe("mensageria liberada; Leads/Compras/Receita/ROAS ainda não", () => {
     }
   });
 
-  it("as 6 métricas liberadas são colunas configuráveis da tabela", () => {
+  it("métricas liberadas são colunas configuráveis da tabela", () => {
     for (const key of RELEASED) {
       expect(TABLE_COLUMN_CATALOG.some((c) => c.key === key), key).toBe(true);
     }
   });
 
-  it("Leads/CPL/Compras/CPA/Receita/ROAS seguem bloqueadas (requiresMeta)", () => {
-    for (const key of STILL_BLOCKED) {
-      const card = CARD_CATALOG.find((c) => c.key === key);
-      if (card) expect(card.requiresMeta, `card ${key}`).toBe(true);
-      const chart = CHART_METRIC_CATALOG.find((c) => c.key === key);
-      if (chart) expect(chart.requiresMeta, `chart ${key}`).toBe(true);
+  it("card/chart-only (sem tabela nesta rodada): card+chart sim, tabela não", () => {
+    for (const key of CARD_CHART_ONLY) {
+      expect(CARD_CATALOG.some((c) => c.key === key), `card ${key}`).toBe(true);
+      expect(CHART_METRIC_CATALOG.some((c) => c.key === key), `chart ${key}`).toBe(true);
+      expect(TABLE_COLUMN_CATALOG.some((c) => c.key === key), `table ${key}`).toBe(false);
     }
-    // leads/cpl nem aparecem nos catálogos visuais desta fase
-    expect(CARD_CATALOG.some((c) => c.key === "leads")).toBe(false);
-    expect(CHART_METRIC_CATALOG.some((c) => c.key === "cpl")).toBe(false);
   });
 
-  it("ativar um card de mensageria liberada é ACEITO no save", () => {
-    const input = baseConfig();
-    input.layout.cards = [
-      ...input.layout.cards.filter(
-        (c) => c.key !== "messaging_conversations_started",
-      ),
-      { key: "messaging_conversations_started", enabled: true },
-      { key: "cost_per_conversation", enabled: true },
-      { key: "messaging_contacts_total", enabled: true },
-      { key: "messaging_contacts_new", enabled: true },
-    ];
-    expect(sanitizeDashboardConfigInput(input).ok).toBe(true);
+  it("vídeo avançado (02B) segue ausente dos 3 catálogos — não é requiresMeta, é INEXISTENTE nesta fase", () => {
+    for (const key of STILL_BLOCKED) {
+      expect(CARD_CATALOG.some((c) => c.key === key), `card ${key}`).toBe(false);
+      expect(CHART_METRIC_CATALOG.some((c) => c.key === key), `chart ${key}`).toBe(false);
+      expect(TABLE_COLUMN_CATALOG.some((c) => c.key === key), `table ${key}`).toBe(false);
+    }
+  });
+
+  it("Compartilhamentos NÃO é uma opção (action_type=post não confirmado semanticamente nesta rodada)", () => {
+    for (const catalog of [CARD_CATALOG, CHART_METRIC_CATALOG, TABLE_COLUMN_CATALOG]) {
+      expect(catalog.some((c) => c.label.toLowerCase().includes("compartilhamento"))).toBe(false);
+    }
+  });
+
+  it("reach/frequência ganham coluna de tabela nesta rodada (antes só card+chart)", () => {
+    expect(TABLE_COLUMN_CATALOG.some((c) => c.key === "reach")).toBe(true);
+    expect(TABLE_COLUMN_CATALOG.some((c) => c.key === "frequency")).toBe(true);
+  });
+
+  it("ativar um card de qualquer métrica liberada é ACEITO no save", () => {
+    for (const key of ["leads", "purchases", "roas", "landing_page_views", "post_engagement"]) {
+      const input = baseConfig();
+      input.layout.cards = [
+        ...input.layout.cards.filter((c) => c.key !== key),
+        { key, enabled: true },
+      ];
+      expect(sanitizeDashboardConfigInput(input), key).toMatchObject({ ok: true });
+    }
   });
 
   it("adicionar gráfico temporal de conversas iniciadas é ACEITO", () => {
@@ -730,19 +813,19 @@ describe("mensageria liberada; Leads/Compras/Receita/ROAS ainda não", () => {
     expect(sanitizeDashboardConfigInput(input).ok).toBe(true);
   });
 
-  it("ativar um card de Compras (ainda bloqueada) continua sendo rejeitado", () => {
+  it("ativar um card de vídeo avançado (02B) continua sendo rejeitado", () => {
     const input = baseConfig();
     input.layout.cards = [
-      ...input.layout.cards.filter((c) => c.key !== "purchases"),
-      { key: "purchases", enabled: true },
+      ...input.layout.cards.filter((c) => c.key !== "video_3s_views"),
+      { key: "video_3s_views", enabled: true },
     ];
     expect(sanitizeDashboardConfigInput(input)).toMatchObject({ ok: false });
   });
 
-  it("adicionar gráfico de ROAS (ainda bloqueada) continua sendo rejeitado", () => {
+  it("adicionar gráfico de ThruPlay (02B) continua sendo rejeitado", () => {
     const input = baseConfig();
     input.layout.charts = [
-      { id: "c_roas", metric: "roas", visualization: "area", title: "ROAS", enabled: true },
+      { id: "c_tp", metric: "video_thruplays", visualization: "area", title: "ThruPlay", enabled: true },
     ];
     expect(sanitizeDashboardConfigInput(input)).toMatchObject({ ok: false });
   });
@@ -752,6 +835,15 @@ describe("mensageria liberada; Leads/Compras/Receita/ROAS ainda não", () => {
     expect(values.has("messaging_conversations_started")).toBe(true);
     expect(values.has("messaging_contacts_total")).toBe(true);
     expect(values.has("messaging_contacts_new")).toBe(true);
+  });
+
+  it("nenhuma métrica precisa ser adicionada manualmente em mais de 1 catálogo: toda métrica card-eligible tem key coerente com chart/table", () => {
+    // prova estrutural de que os 3 catálogos vêm da MESMA fonte: toda key de
+    // CARD_CATALOG que também está em TABLE_COLUMN_CATALOG tem o MESMO label.
+    for (const card of CARD_CATALOG) {
+      const col = TABLE_COLUMN_CATALOG.find((c) => c.key === card.key);
+      if (col) expect(col.label, card.key).toBe(card.label);
+    }
   });
 });
 
@@ -779,5 +871,126 @@ describe("rejeição de valores inválidos", () => {
   it("catálogo de cards inalterado", () => {
     expect(CARD_CATALOG.length).toBeGreaterThan(0);
     expect(TABLE_COLUMN_CATALOG[0].key).toBe(REQUIRED_TABLE_COLUMN);
+  });
+});
+
+/* ================= FEATURE 02A — catálogo único: propriedades estruturais ================= */
+
+describe("FEATURE 02A — catálogos derivados do Registry: propriedades estruturais", () => {
+  it("IDs únicos dentro de cada catálogo (nenhuma métrica duplicada manualmente)", () => {
+    for (const catalog of [CARD_CATALOG, CHART_METRIC_CATALOG, TABLE_COLUMN_CATALOG]) {
+      const keys = catalog.map((c) => c.key);
+      expect(new Set(keys).size, `catálogo com ${keys.length} entradas`).toBe(keys.length);
+    }
+  });
+
+  it("alias spend/investment preservado: card usa 'investment', gráfico usa 'spend' — mesmo label", () => {
+    const card = CARD_CATALOG.find((c) => c.key === "investment");
+    const chart = CHART_METRIC_CATALOG.find((c) => c.key === "spend");
+    expect(card).toBeDefined();
+    expect(chart).toBeDefined();
+    expect(card?.label).toBe(chart?.label);
+    expect(CARD_CATALOG.some((c) => c.key === "spend")).toBe(false);
+    expect(CHART_METRIC_CATALOG.some((c) => c.key === "investment")).toBe(false);
+  });
+
+  it("total de métricas card-eligible cresceu com FEATURE 02A (mais que os 18 antigos)", () => {
+    expect(CARD_CATALOG.length).toBeGreaterThan(18);
+    expect(CHART_METRIC_CATALOG.length).toBeGreaterThan(18);
+  });
+
+  it("nenhum catálogo tem requiresMeta=true sobrando de métrica liberada nesta rodada", () => {
+    for (const catalog of [CARD_CATALOG, CHART_METRIC_CATALOG]) {
+      const stillGated = catalog.filter((c) => c.requiresMeta);
+      // só o que sobrar deve ser 02B (nem deveria aparecer — ver teste acima
+      // "vídeo avançado... segue ausente"); ou seja, hoje é sempre vazio.
+      expect(stillGated).toEqual([]);
+    }
+  });
+});
+
+/* ================= FEATURE 02A — dedupeResultDuplicates / resultEquivalentKeys ================= */
+
+describe("FEATURE 02A — dedupeResultDuplicates: Resultados vs métrica concreta", () => {
+  it("result=messaging_conversations_started + ambos habilitados -> remove o card concreto duplicado", () => {
+    const keys = [
+      "investment",
+      "results",
+      "cost_per_result",
+      "messaging_conversations_started",
+      "cost_per_conversation",
+    ];
+    const out = dedupeResultDuplicates(keys, "messaging_conversations_started");
+    expect(out).toEqual(["investment", "results", "cost_per_result"]);
+  });
+
+  it("result=leads + ambos habilitados -> remove leads/cpl duplicados", () => {
+    const keys = ["results", "cost_per_result", "leads", "cpl", "reach"];
+    const out = dedupeResultDuplicates(keys, "leads");
+    expect(out).toEqual(["results", "cost_per_result", "reach"]);
+  });
+
+  it("result=purchases + ambos habilitados -> remove purchases/cpa duplicados", () => {
+    const keys = ["results", "cost_per_result", "purchases", "cpa"];
+    const out = dedupeResultDuplicates(keys, "purchases");
+    expect(out).toEqual(["results", "cost_per_result"]);
+  });
+
+  it("'results' NÃO habilitado -> métrica concreta aparece normalmente (nada a deduplicar)", () => {
+    const keys = ["investment", "leads", "cpl"];
+    expect(dedupeResultDuplicates(keys, "leads")).toEqual(keys);
+  });
+
+  it("só 'results' habilitado (sem cost_per_result) -> remove só o valor, mantém o custo concreto", () => {
+    const keys = ["results", "leads", "cpl"];
+    expect(dedupeResultDuplicates(keys, "leads")).toEqual(["results", "cpl"]);
+  });
+
+  it("config antiga duplicada (ambos habilitados) normaliza em leitura — sem exceção, sem migration", () => {
+    for (const resultType of [
+      "leads",
+      "purchases",
+      "messaging_conversations_started",
+      "conversations",
+      "messaging_contacts_total",
+      "messaging_contacts_new",
+      "registrations",
+      "appointments",
+    ] as const) {
+      // uma "config antiga" com TODOS os cards do catálogo habilitados
+      // simultaneamente (o pior caso de duplicação possível) — chaves únicas,
+      // como `enabledKeys()` sempre devolve na prática.
+      const allKeys = CARD_CATALOG.map((c) => c.key);
+      expect(() => dedupeResultDuplicates(allKeys, resultType)).not.toThrow();
+      const out = dedupeResultDuplicates(allKeys, resultType);
+      // "results" nunca aparece mais de 1x, e a concreta do tipo configurado
+      // não sobrevive junto de "results" (a duplicação real que se busca evitar).
+      expect(out.filter((k) => k === "results").length).toBeLessThanOrEqual(1);
+      const equivalents = resultEquivalentKeys(resultType);
+      if (out.includes("results")) {
+        for (const eq of equivalents) expect(out).not.toContain(eq);
+      }
+    }
+  });
+
+  it("results/custom: nunca remove nada (sem concreta para deduplicar)", () => {
+    const keys = ["results", "cost_per_result", "leads", "purchases"];
+    expect(dedupeResultDuplicates(keys, "results")).toEqual(keys);
+    expect(dedupeResultDuplicates(keys, "custom")).toEqual(keys);
+  });
+});
+
+describe("FEATURE 02A — resultEquivalentKeys (aviso no editor)", () => {
+  it("devolve a mesma dupla de dedupeResultDuplicates (fonte única — ver lib/meta/result-metric-resolve)", () => {
+    expect(resultEquivalentKeys("leads")).toEqual(new Set(["leads", "cpl"]));
+    expect(resultEquivalentKeys("purchases")).toEqual(new Set(["purchases", "cpa"]));
+    expect(resultEquivalentKeys("messaging_conversations_started")).toEqual(
+      new Set(["messaging_conversations_started", "cost_per_conversation"]),
+    );
+  });
+
+  it("results/custom -> conjunto vazio", () => {
+    expect(resultEquivalentKeys("results").size).toBe(0);
+    expect(resultEquivalentKeys("custom").size).toBe(0);
   });
 });

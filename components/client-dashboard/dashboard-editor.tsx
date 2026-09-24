@@ -14,6 +14,7 @@ import {
   RESULT_METRIC_OPTIONS,
   TABLE_COLUMN_CATALOG,
   catalogLabel,
+  resultEquivalentKeys,
   resultMetricTypeLabel,
   moveItem,
   toggleItem,
@@ -47,6 +48,7 @@ function ReorderableList({
   catalog,
   onChange,
   requiredKey,
+  equivalentKeys,
 }: {
   title: string;
   hint?: string;
@@ -54,6 +56,14 @@ function ReorderableList({
   catalog: readonly CatalogEntry[];
   onChange: (next: LayoutItem[]) => void;
   requiredKey?: string;
+  /**
+   * Keys que representam o MESMO resultado que "results"/"cost_per_result"
+   * no tipo configurado agora (ver `resultEquivalentKeys`) — mostra um aviso
+   * junto do checkbox em vez de esconder a opção. Só uma delas de fato
+   * renderiza no dashboard quando as duas estão ativas (`dedupeResultDuplicates`,
+   * aplicado na leitura por `dashboard-content.tsx`).
+   */
+  equivalentKeys?: ReadonlySet<string>;
 }) {
   return (
     <section className="space-y-2">
@@ -66,6 +76,7 @@ function ReorderableList({
           const entry = catalog.find((c) => c.key === item.key);
           const locked = item.key === requiredKey;
           const future = Boolean(entry?.requiresMeta);
+          const equivalent = equivalentKeys?.has(item.key) ?? false;
           return (
             <li
               key={item.key}
@@ -86,6 +97,11 @@ function ReorderableList({
                 )}
               >
                 {catalogLabel(catalog, item.key)}
+                {equivalent && (
+                  <span className="ml-2 text-xs text-muted">
+                    = Resultado principal (mesmo número)
+                  </span>
+                )}
               </span>
               {locked && (
                 <Badge tone="muted">Obrigatória</Badge>
@@ -268,6 +284,7 @@ export function DashboardEditor({
           items={layout.cards}
           catalog={CARD_CATALOG}
           onChange={(cards) => setLayout({ cards })}
+          equivalentKeys={resultEquivalentKeys(resultMetric.type)}
         />
 
         <ChartListEditor
@@ -282,6 +299,7 @@ export function DashboardEditor({
           catalog={TABLE_COLUMN_CATALOG}
           requiredKey={REQUIRED_TABLE_COLUMN}
           onChange={(tableColumns) => setLayout({ tableColumns })}
+          equivalentKeys={resultEquivalentKeys(resultMetric.type)}
         />
 
         {error && <p className="text-sm text-negative">{error}</p>}

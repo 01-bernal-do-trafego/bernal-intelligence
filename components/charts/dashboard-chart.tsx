@@ -38,7 +38,10 @@ export function DashboardChart({
   comparisonBehavior,
 }: DashboardChartProps) {
   const entry = chartMetricEntry(metric);
-  const format = entry?.format === "currency" ? "currency" : "number";
+  // FEATURE 02A: usa o `format` real da métrica (currency/number/percent/
+  // decimal) — antes qualquer coisa que não fosse "currency" virava "number"
+  // cru, mesmo CTR (%) ou ROAS/frequência (decimal).
+  const format = entry?.format ?? "number";
   const variant: TrendVariant = IMPLEMENTED_VARIANTS.includes(
     visualization as TrendVariant,
   )

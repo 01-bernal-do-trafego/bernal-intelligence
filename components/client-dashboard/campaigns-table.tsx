@@ -5,11 +5,17 @@ import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 import { DataTable, type Column } from "@/components/ui/data-table";
 import { CampaignStatusBadge } from "@/components/shared/status-badges";
 import { cn } from "@/lib/cn";
-import { formatCurrency, formatNumber, formatPercent } from "@/lib/format";
+import { formatCurrency, formatDecimal, formatNumber, formatPercent } from "@/lib/format";
+import { TABLE_COLUMN_CATALOG, catalogLabel } from "@/lib/dashboard-config";
 import type { DashboardCampaignRow } from "@/server/client-dashboard";
 import type { CampaignStatus, ResultMetricConfig } from "@/types/domain";
 
-/** Colunas de conversão (valor vem de `row.conversions`, null-aware). */
+type CellFormat = "currency" | "number" | "percent" | "decimal";
+
+/** Colunas cujo valor vem de `row.conversions` (bolsa genérica, null-aware) —
+ * mesmo conjunto liberado no Registry para a superfície "table"
+ * (`lib/metrics/registry.ts`, `dashboardSurfaces`), exceto reach/frequência
+ * (campo próprio — ver comentário em `columnDefs`). */
 const CONVERSION_COLUMN_KEYS = [
   "results",
   "cost_per_result",
@@ -17,11 +23,42 @@ const CONVERSION_COLUMN_KEYS = [
   "cost_per_conversation",
   "messaging_contacts_total",
   "messaging_contacts_new",
+  // FEATURE 02A:
+  "inline_link_clicks",
+  "ctr_link",
+  "cpc_link",
+  "leads",
+  "cpl",
+  "landing_page_views",
+  "cost_per_landing_page_view",
+  "purchases",
+  "cpa",
+  "revenue",
+  "roas",
+  "add_to_cart",
+  "cost_per_add_to_cart",
+  "initiate_checkout",
+  "cost_per_initiate_checkout",
+  "post_engagement",
+  "post_reactions",
+  "post_comments",
+  "post_saves",
 ] as const;
-const CONVERSION_CURRENCY = new Set<string>([
-  "cost_per_result",
-  "cost_per_conversation",
-]);
+
+/** `format` de cada coluna de conversão — default "number" quando ausente. */
+const CONVERSION_FORMAT: Record<string, CellFormat> = {
+  cost_per_result: "currency",
+  cost_per_conversation: "currency",
+  ctr_link: "percent",
+  cpc_link: "currency",
+  cpl: "currency",
+  cost_per_landing_page_view: "currency",
+  cpa: "currency",
+  revenue: "currency",
+  roas: "decimal",
+  cost_per_add_to_cart: "currency",
+  cost_per_initiate_checkout: "currency",
+};
 
 type SortKey = string;
 type SortDir = "asc" | "desc";
@@ -49,37 +86,45 @@ function currencyOrDash(value: number, hasBase: boolean) {
   );
 }
 
-/** Conversão da campanha: `null` (sem evento) -> "—"; `0` medido -> "0". */
-function conversionCell(value: number | null | undefined, currency: boolean) {
+/** `reach`/`frequency`: `null` (sem agregado periódico exato) -> "—". Nunca
+ * somados do diário — ver BUG 01/FEATURE 02A #9. */
+function periodicOrDash(value: number | null, digits?: number) {
   if (value == null) return <span className="text-muted">—</span>;
   return (
     <span className="tabular-nums">
-      {currency ? formatCurrency(value) : formatNumber(value)}
+      {digits != null ? formatDecimal(value, digits) : formatNumber(value)}
     </span>
   );
 }
 
-const CONVERSION_HEADER: Record<string, string> = {
-  messaging_conversations_started: "Conversas iniciadas",
-  cost_per_conversation: "Custo por conversa iniciada",
-  messaging_contacts_total: "Total de contatos",
-  messaging_contacts_new: "Novos contatos",
-};
+/** Conversão da campanha: `null` (sem evento/fonte) -> "—"; `0` medido -> "0". */
+function conversionCell(value: number | null | undefined, format: CellFormat) {
+  if (value == null) return <span className="text-muted">—</span>;
+  const text =
+    format === "currency"
+      ? formatCurrency(value)
+      : format === "percent"
+        ? formatPercent(value, 2)
+        : format === "decimal"
+          ? formatDecimal(value, 2)
+          : formatNumber(value);
+  return <span className="tabular-nums">{text}</span>;
+}
 
 function columnDefs(metric: ResultMetricConfig): Record<string, ColumnDef> {
   const conv: Record<string, ColumnDef> = {};
   for (const key of CONVERSION_COLUMN_KEYS) {
-    const currency = CONVERSION_CURRENCY.has(key);
+    const format = CONVERSION_FORMAT[key] ?? "number";
     conv[key] = {
       header:
         key === "results"
           ? metric.resultLabel
           : key === "cost_per_result"
             ? metric.costLabel
-            : CONVERSION_HEADER[key],
+            : catalogLabel(TABLE_COLUMN_CATALOG, key),
       align: "right",
       sortKey: key,
-      render: (r) => conversionCell(r.conversions?.[key], currency),
+      render: (r) => conversionCell(r.conversions?.[key], format),
     };
   }
   return {
@@ -102,7 +147,14 @@ function columnDefs(metric: ResultMetricConfig): Record<string, ColumnDef> {
       header: "Alcance",
       align: "right",
       sortKey: "reach",
-      render: (r) => <span className="tabular-nums">{formatNumber(r.reach)}</span>,
+      render: (r) => periodicOrDash(r.reach),
+    },
+    // FEATURE 02A: coluna nova — mesma regra periodic-exato de reach.
+    frequency: {
+      header: "Frequência",
+      align: "right",
+      sortKey: "frequency",
+      render: (r) => periodicOrDash(r.frequency, 2),
     },
     impressions: {
       header: "Impressões",

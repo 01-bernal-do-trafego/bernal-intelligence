@@ -11,6 +11,7 @@ import {
   CARD_METRIC_KEY,
   cardLabel,
   chartMetricEntry,
+  dedupeResultDuplicates,
   enabledKeys,
 } from "@/lib/dashboard-config";
 import type { ClientDashboardData, DashboardMetric, MetricKey } from "@/server/client-dashboard";
@@ -88,9 +89,22 @@ export function DashboardContent({
 }: DashboardContentProps) {
   const { config, metrics, series, resultMetric } = dashboard;
 
-  const cardKeys = enabledKeys(config.layout.cards);
+  // FEATURE 02A: "Resultados"/"Custo por resultado" e a métrica CONCRETA
+  // correspondente (ex.: result_metric=messaging_conversations_started ->
+  // "Conversas iniciadas") nunca renderizam como 2 cards/colunas idênticos.
+  // NORMALIZADO EM LEITURA aqui — configs antigas salvas com os dois
+  // habilitados deixam de duplicar sem precisar de migration. Gráficos não
+  // passam por este filtro: cada gráfico tem título próprio, escolhido
+  // explicitamente pelo usuário — não há o mesmo risco de duplicata "muda".
+  const cardKeys = dedupeResultDuplicates(
+    enabledKeys(config.layout.cards),
+    resultMetric.type,
+  );
   const enabledCharts = config.layout.charts.filter((c) => c.enabled);
-  const columnKeys = enabledKeys(config.layout.tableColumns);
+  const columnKeys = dedupeResultDuplicates(
+    enabledKeys(config.layout.tableColumns),
+    resultMetric.type,
+  );
 
   return (
     <>

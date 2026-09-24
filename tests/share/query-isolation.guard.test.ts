@@ -90,7 +90,7 @@ describe("grafo de queries alcançável pelo share público — 12 queries, toda
 
   it("real-dashboard.ts#4 — meta_insights_periodic (tabela de campanhas) .eq(\"client_id\", client.id)", () => {
     const idx = realDashboard.lastIndexOf('.from("meta_insights_periodic")');
-    const block = realDashboard.slice(idx, idx + 250);
+    const block = realDashboard.slice(idx, idx + 350);
     expect(block).toContain('.eq("client_id", client.id)');
   });
 

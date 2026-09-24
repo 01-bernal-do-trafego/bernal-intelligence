@@ -79,3 +79,55 @@ export function withResolvedResults(
   else actions.results = value;
   return { ...totals, actions };
 }
+
+/**
+ * FEATURE 02A — deduplicação "Resultados"/"Custo por resultado" vs a métrica
+ * CONCRETA correspondente. Quando `result_metric.type` resolve para uma
+ * métrica concreta X (via `RESULT_METRIC_CANONICAL` acima) e X (ou o custo de
+ * X) TAMBÉM está habilitado como card/coluna próprio, os dois mostrariam o
+ * MESMO número sob rótulos diferentes (ex.: type=messaging_conversations_started
+ * -> "Resultados" relabelado para "Conversas iniciadas" + card dedicado
+ * "Conversas iniciadas" = duas vezes o mesmo card).
+ *
+ * `costMetricId` só existe quando há um `formula()` dedicado no Registry para
+ * o custo daquele tipo (`cpl`, `cpa`, `cost_per_conversation`) — tipos sem
+ * custo concreto próprio (contatos, cadastros, agendamentos) deduplicam só o
+ * valor. `results`/`custom` não têm concreta -> sem entrada (nada a deduplicar).
+ *
+ * Consumido por `lib/dashboard-config.ts#dedupeResultDuplicates` — ÚNICA
+ * função que decide quais cards/colunas renderizar (nada espalhado no JSX).
+ */
+export interface ResultDuplicate {
+  /** id de métrica cujo card/coluna é idêntico ao "Resultados" quando ambos habilitados. */
+  valueMetricId: string;
+  /** id do custo concreto correspondente, quando existe um formula() dedicado. */
+  costMetricId?: string;
+}
+
+export const RESULT_TYPE_DUPLICATE: Readonly<
+  Partial<Record<ResultMetricType, ResultDuplicate>>
+> = {
+  leads: { valueMetricId: "leads", costMetricId: "cpl" },
+  purchases: { valueMetricId: "purchases", costMetricId: "cpa" },
+  // `conversations` (legado) resolve como "conversas iniciadas" — mesma dupla.
+  conversations: {
+    valueMetricId: "messaging_conversations_started",
+    costMetricId: "cost_per_conversation",
+  },
+  messaging_conversations_started: {
+    valueMetricId: "messaging_conversations_started",
+    costMetricId: "cost_per_conversation",
+  },
+  messaging_contacts_total: { valueMetricId: "messaging_contacts_total" },
+  messaging_contacts_new: { valueMetricId: "messaging_contacts_new" },
+  registrations: { valueMetricId: "registrations" },
+  appointments: { valueMetricId: "appointments" },
+};
+
+/** A dupla concreta (valor + custo) do tipo configurado, ou `null` (results/custom). */
+export function resultDuplicateFor(
+  resultType: ResultMetricType | null | undefined,
+): ResultDuplicate | null {
+  if (!resultType) return null;
+  return RESULT_TYPE_DUPLICATE[resultType] ?? null;
+}

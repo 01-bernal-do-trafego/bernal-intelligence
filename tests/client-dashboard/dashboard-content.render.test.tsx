@@ -15,6 +15,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_DASHBOARD_CONFIG } from "@/lib/dashboard-config";
+import { ALL_METRIC_KEYS, type MetricKey } from "@/lib/metrics/dashboard-metric-keys";
 import type { ClientDashboardData } from "@/server/client-dashboard";
 import type { ClientSyncHealth } from "@/server/meta-sync-health";
 
@@ -57,22 +58,9 @@ function baseDashboard(overrides: Partial<ClientDashboardData> = {}): ClientDash
     compare: false,
     range: { start: "2026-09-01", end: "2026-09-07" },
     previous: { start: "2026-08-25", end: "2026-08-31" },
-    metrics: {
-      investment: zeroMetric,
-      results: zeroMetric,
-      cost_per_result: zeroMetric,
-      reach: zeroMetric,
-      impressions: zeroMetric,
-      clicks: zeroMetric,
-      ctr: zeroMetric,
-      cpc: zeroMetric,
-      cpm: zeroMetric,
-      frequency: zeroMetric,
-      messaging_conversations_started: zeroMetric,
-      cost_per_conversation: zeroMetric,
-      messaging_contacts_total: zeroMetric,
-      messaging_contacts_new: zeroMetric,
-    },
+    metrics: Object.fromEntries(
+      ALL_METRIC_KEYS.map((key) => [key, zeroMetric]),
+    ) as Record<MetricKey, ClientDashboardData["metrics"][MetricKey]>,
     series: {},
     campaignRows: [],
     ...overrides,
@@ -153,5 +141,49 @@ describe("DashboardContent — readOnly esconde controles administrativos, mant�
     expect(shareHtml).toContain("Performance");
     expect(adminHtml).toContain("Campanhas");
     expect(shareHtml).toContain("Campanhas");
+  });
+
+  it("FEATURE 02A: dedup de 'Conversas iniciadas' é IDÊNTICA em admin e share (mesmo componente, mesma config)", () => {
+    // config antiga/duplicada: "Resultados" configurado para mensageria E o
+    // card dedicado de mensageria, os dois habilitados — o cenário exato do
+    // bug relatado (Atacado do Chinelo).
+    const dashboard = baseDashboard({
+      resultMetric: {
+        type: "messaging_conversations_started",
+        resultLabel: "Conversas iniciadas",
+        costLabel: "Custo por conversa iniciada",
+        behavior: "higher_is_better",
+      },
+      config: {
+        resultMetric: {
+          type: "messaging_conversations_started",
+          resultLabel: "Conversas iniciadas",
+          costLabel: "Custo por conversa iniciada",
+          behavior: "higher_is_better",
+        },
+        layout: {
+          version: 2,
+          cards: [
+            { key: "results", enabled: true },
+            { key: "messaging_conversations_started", enabled: true },
+            { key: "investment", enabled: true },
+          ],
+          charts: [],
+          tableColumns: [{ key: "campaign", enabled: true }],
+        },
+      },
+    });
+    const adminHtml = renderToStaticMarkup(
+      <DashboardContent clientId="c1" dashboard={dashboard} compare={false} />,
+    );
+    const shareHtml = renderToStaticMarkup(
+      <DashboardContent clientId="c1" dashboard={dashboard} compare={false} readOnly />,
+    );
+    for (const html of [adminHtml, shareHtml]) {
+      const occurrences = (html.match(/Conversas iniciadas/g) ?? []).length;
+      // 1 card só (não 2) — a duplicação real do bug relatado não acontece
+      // nem em admin nem em share.
+      expect(occurrences).toBe(1);
+    }
   });
 });

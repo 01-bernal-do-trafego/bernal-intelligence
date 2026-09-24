@@ -11,6 +11,7 @@ import {
   CONFIG_DRIVEN_METRIC_IDS,
   isConfigDrivenMetric,
 } from "@/lib/metrics/registry";
+import { resultDuplicateFor } from "@/lib/meta/result-metric-resolve";
 
 /** totais de um período com actions CANÔNICAS já resolvidas (como o banco guarda). */
 function totals(over: Partial<MetricTotals> = {}): MetricTotals {
@@ -158,6 +159,58 @@ describe("withResolvedResults + Registry", () => {
     expect(new Set(CONFIG_DRIVEN_METRIC_IDS)).toEqual(
       new Set(["results", "cost_per_result"]),
     );
+  });
+});
+
+describe("FEATURE 02A — resultDuplicateFor (deduplicação Resultados vs métrica concreta)", () => {
+  it("result=messaging_conversations_started -> dupla = messaging_conversations_started/cost_per_conversation", () => {
+    const dup = resultDuplicateFor("messaging_conversations_started");
+    expect(dup).toEqual({
+      valueMetricId: "messaging_conversations_started",
+      costMetricId: "cost_per_conversation",
+    });
+  });
+
+  it("result=conversations (legado) resolve a MESMA dupla que messaging_conversations_started", () => {
+    expect(resultDuplicateFor("conversations")).toEqual(
+      resultDuplicateFor("messaging_conversations_started"),
+    );
+  });
+
+  it("result=leads -> dupla = leads/cpl", () => {
+    expect(resultDuplicateFor("leads")).toEqual({
+      valueMetricId: "leads",
+      costMetricId: "cpl",
+    });
+  });
+
+  it("result=purchases -> dupla = purchases/cpa", () => {
+    expect(resultDuplicateFor("purchases")).toEqual({
+      valueMetricId: "purchases",
+      costMetricId: "cpa",
+    });
+  });
+
+  it("tipos sem custo concreto próprio (contatos/cadastros/agendamentos) deduplicam só o valor", () => {
+    expect(resultDuplicateFor("messaging_contacts_total")).toEqual({
+      valueMetricId: "messaging_contacts_total",
+    });
+    expect(resultDuplicateFor("messaging_contacts_new")).toEqual({
+      valueMetricId: "messaging_contacts_new",
+    });
+    expect(resultDuplicateFor("registrations")).toEqual({
+      valueMetricId: "registrations",
+    });
+    expect(resultDuplicateFor("appointments")).toEqual({
+      valueMetricId: "appointments",
+    });
+  });
+
+  it("results/custom não têm concreta -> null (nada a deduplicar)", () => {
+    expect(resultDuplicateFor("results")).toBeNull();
+    expect(resultDuplicateFor("custom")).toBeNull();
+    expect(resultDuplicateFor(null)).toBeNull();
+    expect(resultDuplicateFor(undefined)).toBeNull();
   });
 });
 
