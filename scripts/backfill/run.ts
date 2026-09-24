@@ -1,11 +1,12 @@
 #!/usr/bin/env -S npx tsx
 /**
- * DATA V2.3A/V2.3B — Historical Backfill Rollout. Runner administrativo (CLI).
+ * DATA V2.3A/V2.3B + PROD SAFETY — Historical Backfill Rollout. Runner
+ * administrativo (CLI).
  * ---------------------------------------------------------------------------
  * Uma única operação manual para rodar um job de backfill inteiro, sem tocar
  * no SQL Editor.
  *
- * INTERVALO EXPLÍCITO (V2.3A):
+ * INTERVALO EXPLÍCITO (V2.3A), em DEV (padrão — sem --environment):
  *   npm run backfill -- --client-id <uuid> --ad-account-ref <uuid> \
  *     --from 2026-08-01 --to 2026-09-10 --levels account,campaign,adset,ad
  *
@@ -13,6 +14,16 @@
  * `meta-backfill-discovery`, sem precisar informar `--from`:
  *   npm run backfill -- --client-id <uuid> --ad-account-ref <uuid> \
  *     --levels account,campaign,adset,ad --all-history
+ *
+ * PROD (PROD SAFETY) — exige DUAS decisões explícitas e independentes do
+ * operador, além de `--execute` para autorizar a execução de fato:
+ *   npm run backfill -- --client-id <uuid> --ad-account-ref <uuid> \
+ *     --environment prod --confirm-project-ref bmtzurlsohinqbjxcpje \
+ *     --from 2026-08-01 --to 2026-09-10
+ * Sem `--environment prod`: nunca toca Prod. Com `--environment prod` mas
+ * sem `--confirm-project-ref bmtzurlsohinqbjxcpje` (ou com um valor
+ * diferente): aborta antes de qualquer chamada de rede — ver
+ * `environment-guard.ts`.
  *
  * `--all-history` e `--from`/`--to` são MUTUAMENTE EXCLUSIVOS
  * (`cli-args.ts`). Sem nenhum dos dois, o runner recusa — nunca inventa uma
@@ -25,6 +36,9 @@
  * cria job, NÃO chama o executor. Com `--all-history`, a mensagem final NÃO
  * diz "nenhuma chamada Meta" (Discovery chamou a Meta de verdade para
  * descobrir o histórico) — diz que nenhum job/segmento foi criado/executado.
+ * Isto vale em DEV e em PROD igualmente — `--environment prod` sozinho
+ * (mesmo com `--confirm-project-ref` correto) NUNCA cria job/executa nada
+ * sem `--execute` também.
  *
  * COM `--execute`: [discovery] → inspect → planner → guarda de volume
  * (`MAX_PLANNED_SEGMENTS`) → `create` (via orchestrator, RPC atômica) →
@@ -32,23 +46,31 @@
  * executor 1 segmento por vez até um desfecho terminal ou uma guarda de
  * segurança.
  *
- *   npm run backfill -- --resume <jobId>
+ *   npm run backfill -- --resume <jobId> [--environment prod --confirm-project-ref <ref>]
  *
  * NÃO roda discovery, NÃO cria outro job — só retoma o loop de execução de
  * um job já existente. Ctrl-C não cancela nada (nenhum handler de SIGINT
  * toca o job) — o job fica exatamente como estava, persistido no banco.
+ * `--resume` TAMBÉM passa pelo guard de ambiente (chama orchestrator/
+ * executor) — resumir um job de Prod exige as mesmas 2 flags.
  *
  * SECRETS: só de env (`./env.ts`) — `BACKFILL_ORCHESTRATOR_URL`,
  * `META_BACKFILL_ORCHESTRATOR_SECRET`, `BACKFILL_EXECUTOR_URL`,
  * `META_BACKFILL_EXECUTOR_SECRET` (sempre) + `BACKFILL_DISCOVERY_URL`,
  * `META_BACKFILL_DISCOVERY_SECRET` (só quando `--all-history`). NUNCA
- * aceitos via argumento de CLI, NUNCA impressos.
+ * aceitos via argumento de CLI, NUNCA impressos. `./env.ts#loadEnvironmentFile`
+ * carrega `.env.backfill.<dev|prod>.local` (raiz do repo, ignorado pelo Git)
+ * ANTES de ler `process.env` — shell exportado sempre vence sobre o arquivo;
+ * o arquivo é só conveniência, nunca obrigatório.
  *
- * DEV ONLY: `./dev-guard.ts#assertDevProjectRef` recusa qualquer
- * project-ref que não seja o Supabase Dev conhecido — em especial o de
- * Prod, por nome. Checado para orchestrator/executor sempre, e também para
- * discovery quando `--all-history` é usado — sempre ANTES de qualquer
- * chamada de rede.
+ * AMBIENTE (PROD SAFETY, `./environment-guard.ts`): dois ambientes
+ * conhecidos, nunca um terceiro — `dev` (padrão, sem `--environment`, SEM
+ * confirmação extra — comportamento de sempre) e `prod` (exige
+ * `--environment prod` E `--confirm-project-ref bmtzurlsohinqbjxcpje` — as
+ * DUAS, sempre). Depois disso, CADA URL (orchestrator/executor/discovery)
+ * é validada contra o ambiente declarado — uma URL de Prod com
+ * `--environment dev` (ou o inverso) aborta, assim como qualquer
+ * project-ref desconhecido. Tudo ANTES de qualquer chamada de rede.
  *
  * Sequencial por desenho: nunca mais de 1 invocação do executor "em voo",
  * nunca processa mais de 1 conta por execução do runner. Sem paralelismo
@@ -63,8 +85,19 @@
 import { planBackfillSegments } from "@/lib/backfill/planner";
 import type { EntityCountHints } from "@/lib/backfill/block-size";
 import { parseRunArgs, CliArgsError, type ParsedRunArgs } from "./cli-args";
-import { readRunnerEnv, requireDiscoveryEnv, RunnerEnvError, type RunnerEnv } from "./env";
-import { assertDevProjectRef, DevOnlyGuardError } from "./dev-guard";
+import {
+  readRunnerEnv,
+  requireDiscoveryEnv,
+  loadEnvironmentFile,
+  RunnerEnvError,
+  type RunnerEnv,
+} from "./env";
+import {
+  assertEnvironmentConfirmed,
+  assertUrlMatchesEnvironment,
+  EnvironmentGuardError,
+  type Environment,
+} from "./environment-guard";
 import {
   inspectAccount as realInspectAccount,
   createJob as realCreateJob,
@@ -89,9 +122,14 @@ import { runBackfillLoop, DEFAULT_DELAY_MS, DEFAULT_MAX_CONSECUTIVE_IDLE, type R
 import { MAX_PLANNED_SEGMENTS, exceedsMaxPlannedSegments } from "./segment-limits";
 
 export interface RunCliDeps {
+  /** Carrega `.env.backfill.<environment>.local` se existir — nunca sobrescreve env já setado. */
+  loadEnvironmentFile: (environment: Environment) => void;
   readEnv: () => RunnerEnv;
   requireDiscoveryEnv: (env: RunnerEnv) => { discoveryUrl: string; discoverySecret: string };
-  assertDevProjectRef: (url: string) => void;
+  /** PASSO 1 da dupla confirmação — a INTENÇÃO do operador (flags), antes de tocar env/rede. */
+  assertEnvironmentConfirmed: (environment: Environment, confirmProjectRef: string | null) => void;
+  /** PASSO 2 — cada URL de Edge Function bate com o ambiente declarado. */
+  assertUrlMatchesEnvironment: (url: string, environment: Environment) => void;
   inspectAccount: (config: OrchestratorConfig, args: { clientId: string; adAccountRef: string }) => Promise<InspectResult>;
   createJob: (config: OrchestratorConfig, args: CreateJobArgs) => Promise<CreateJobResult>;
   getJobStatus: (config: OrchestratorConfig, args: { jobId: string }) => Promise<StatusResult>;
@@ -103,9 +141,11 @@ export interface RunCliDeps {
 }
 
 export const realRunCliDeps: RunCliDeps = {
+  loadEnvironmentFile,
   readEnv: readRunnerEnv,
   requireDiscoveryEnv,
-  assertDevProjectRef,
+  assertEnvironmentConfirmed,
+  assertUrlMatchesEnvironment,
   inspectAccount: realInspectAccount,
   createJob: realCreateJob,
   getJobStatus: realGetJobStatus,
@@ -130,6 +170,25 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps): Promise
     return 1;
   }
 
+  // PROD SAFETY passo 1 — a INTENÇÃO do operador, ANTES de ler env ou tocar
+  // rede. `--environment prod` sozinho nunca basta (ver environment-guard.ts).
+  try {
+    deps.assertEnvironmentConfirmed(args.environment, args.confirmProjectRef);
+  } catch (err) {
+    deps.error(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
+  deps.log(
+    args.environment === "prod"
+      ? "AMBIENTE: PRODUÇÃO — confirmado explicitamente via --confirm-project-ref."
+      : "Ambiente: dev (padrão).",
+  );
+
+  // Conveniência: `.env.backfill.<environment>.local` (raiz do repo, ignorado
+  // pelo Git) preenche o que faltar em process.env — nunca sobrescreve uma
+  // variável já exportada no shell.
+  deps.loadEnvironmentFile(args.environment);
+
   let env: RunnerEnv;
   try {
     env = deps.readEnv();
@@ -138,10 +197,11 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps): Promise
     return 1;
   }
 
-  // DEV ONLY — antes de QUALQUER chamada de rede.
+  // PROD SAFETY passo 2 — cada URL bate com o ambiente declarado acima.
+  // Antes de QUALQUER chamada de rede.
   try {
-    deps.assertDevProjectRef(env.orchestratorUrl);
-    deps.assertDevProjectRef(env.executorUrl);
+    deps.assertUrlMatchesEnvironment(env.orchestratorUrl, args.environment);
+    deps.assertUrlMatchesEnvironment(env.executorUrl, args.environment);
   } catch (err) {
     deps.error(err instanceof Error ? err.message : String(err));
     return 1;
@@ -179,7 +239,7 @@ export async function runCli(argv: readonly string[], deps: RunCliDeps): Promise
     let discoveryEnv: { discoveryUrl: string; discoverySecret: string };
     try {
       discoveryEnv = deps.requireDiscoveryEnv(env);
-      deps.assertDevProjectRef(discoveryEnv.discoveryUrl);
+      deps.assertUrlMatchesEnvironment(discoveryEnv.discoveryUrl, args.environment);
     } catch (err) {
       deps.error(err instanceof Error ? err.message : String(err));
       return 1;
@@ -316,7 +376,7 @@ if (isMain) {
       process.exitCode = code;
     })
     .catch((err) => {
-      if (err instanceof CliArgsError || err instanceof RunnerEnvError || err instanceof DevOnlyGuardError) {
+      if (err instanceof CliArgsError || err instanceof RunnerEnvError || err instanceof EnvironmentGuardError) {
         console.error(err.message);
       } else {
         console.error(err instanceof Error ? err.message : String(err));

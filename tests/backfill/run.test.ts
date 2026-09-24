@@ -2,10 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 import { runCli, type RunCliDeps } from "../../scripts/backfill/run";
 import type { InspectResult, CreateJobResult, StatusResult } from "../../scripts/backfill/orchestrator-client";
 import type { DiscoveryResult } from "../../scripts/backfill/discovery-client";
+import {
+  DEV_PROJECT_REF,
+  PROD_PROJECT_REF,
+  EnvironmentGuardError,
+  assertEnvironmentConfirmed as realAssertEnvironmentConfirmed,
+  assertUrlMatchesEnvironment as realAssertUrlMatchesEnvironment,
+} from "../../scripts/backfill/environment-guard";
 
-const DEV_URL = "https://vqodysgxdkkvmfqyprpu.supabase.co/functions/v1/meta-backfill-orchestrator";
-const EXEC_URL = "https://vqodysgxdkkvmfqyprpu.supabase.co/functions/v1/meta-backfill-executor";
-const DISC_URL = "https://vqodysgxdkkvmfqyprpu.supabase.co/functions/v1/meta-backfill-discovery";
+const DEV_URL = `https://${DEV_PROJECT_REF}.supabase.co/functions/v1/meta-backfill-orchestrator`;
+const EXEC_URL = `https://${DEV_PROJECT_REF}.supabase.co/functions/v1/meta-backfill-executor`;
+const DISC_URL = `https://${DEV_PROJECT_REF}.supabase.co/functions/v1/meta-backfill-discovery`;
+const PROD_URL = `https://${PROD_PROJECT_REF}.supabase.co/functions/v1/meta-backfill-orchestrator`;
+const PROD_EXEC_URL = `https://${PROD_PROJECT_REF}.supabase.co/functions/v1/meta-backfill-executor`;
+const PROD_DISC_URL = `https://${PROD_PROJECT_REF}.supabase.co/functions/v1/meta-backfill-discovery`;
 
 function baseInspection(overrides: Partial<InspectResult> = {}): InspectResult {
   return {
@@ -40,6 +50,7 @@ function baseFoundDiscovery(overrides: Partial<DiscoveryResult> = {}): Discovery
 
 function baseDeps(overrides: Partial<RunCliDeps> = {}): RunCliDeps {
   return {
+    loadEnvironmentFile: vi.fn(),
     readEnv: vi.fn().mockReturnValue({
       orchestratorUrl: DEV_URL,
       orchestratorSecret: "secret-orch-abc",
@@ -49,7 +60,8 @@ function baseDeps(overrides: Partial<RunCliDeps> = {}): RunCliDeps {
       discoverySecret: "secret-disc-ijk",
     }),
     requireDiscoveryEnv: vi.fn().mockReturnValue({ discoveryUrl: DISC_URL, discoverySecret: "secret-disc-ijk" }),
-    assertDevProjectRef: vi.fn(),
+    assertEnvironmentConfirmed: vi.fn(),
+    assertUrlMatchesEnvironment: vi.fn(),
     inspectAccount: vi.fn().mockResolvedValue(baseInspection()),
     createJob: vi.fn().mockResolvedValue({ jobId: "job-1", segmentCount: 3, status: "running", range: { from: "2026-08-01", to: "2026-08-31" }, levels: ["account"] } satisfies CreateJobResult),
     getJobStatus: vi.fn().mockResolvedValue({
@@ -206,10 +218,10 @@ describe("--all-history --execute — cria 1 job usando o range descoberto", () 
     expect(deps.createJob).not.toHaveBeenCalled();
   });
 
-  it("Dev-only guard também é checado para a URL de discovery, antes de chamar discoverAccountHistory", async () => {
+  it("guard de ambiente também é checado para a URL de discovery, antes de chamar discoverAccountHistory", async () => {
     const order: string[] = [];
     const deps = baseDeps({
-      assertDevProjectRef: vi.fn((url: string) => order.push(`guard:${url}`)),
+      assertUrlMatchesEnvironment: vi.fn((url: string) => order.push(`guard:${url}`)),
       discoverAccountHistory: vi.fn(async () => {
         order.push("discover");
         return baseFoundDiscovery();
@@ -279,11 +291,11 @@ describe("--resume — NÃO cria job novo, NÃO roda discovery, só retoma o loo
   });
 });
 
-describe("Dev-only guard chamado antes de qualquer request", () => {
-  it("assertDevProjectRef é chamado para orchestrator e executor ANTES de inspectAccount", async () => {
+describe("Guard de ambiente chamado antes de qualquer request", () => {
+  it("assertUrlMatchesEnvironment é chamado para orchestrator e executor ANTES de inspectAccount", async () => {
     const order: string[] = [];
     const deps = baseDeps({
-      assertDevProjectRef: vi.fn(() => order.push("guard")),
+      assertUrlMatchesEnvironment: vi.fn(() => order.push("guard")),
       inspectAccount: vi.fn(async () => {
         order.push("inspect");
         return baseInspection();
@@ -296,7 +308,7 @@ describe("Dev-only guard chamado antes de qualquer request", () => {
 
   it("guard lançando erro (ex.: Prod detectado) -> aborta, NUNCA chama inspectAccount", async () => {
     const deps = baseDeps({
-      assertDevProjectRef: vi.fn(() => {
+      assertUrlMatchesEnvironment: vi.fn(() => {
         throw new Error("ABORTADO: project-ref de PRODUÇÃO detectado");
       }),
     });
@@ -354,5 +366,257 @@ describe("nenhuma chamada real à Meta/Supabase durante os testes", () => {
     await runCli(ARGV_EXEC, deps);
     expect(deps.inspectAccount).toHaveBeenCalled();
     expect(deps.createJob).toHaveBeenCalled();
+  });
+});
+
+/* ================================================================== */
+/* PROD SAFETY — chore/prod-backfill-safety                           */
+/* ================================================================== */
+/**
+ * Estes testes usam os guards REAIS (`environment-guard.ts`), não fakes —
+ * é o comportamento de segurança em si que está sob teste, integrado ao
+ * fluxo do `runCli`. `inspectAccount`/`createJob`/etc. continuam fakes
+ * (nunca rede real) — só os 2 guards são reais.
+ */
+function baseDepsRealGuards(overrides: Partial<RunCliDeps> = {}): RunCliDeps {
+  return baseDeps({
+    assertEnvironmentConfirmed: realAssertEnvironmentConfirmed,
+    assertUrlMatchesEnvironment: realAssertUrlMatchesEnvironment,
+    ...overrides,
+  });
+}
+
+const ARGV_DEV_DRY = ARGV_DRY; // sem --environment -> default dev, URLs de baseDeps já são dev.
+const PROD_ENV_FLAGS = ["--environment", "prod", "--confirm-project-ref", PROD_PROJECT_REF];
+/** Fábrica (nunca uma instância `vi.fn()` compartilhada — cada teste precisa
+ * da própria contagem de chamadas, isolada dos demais). */
+function makeProdEnvRead() {
+  return vi.fn().mockReturnValue({
+    orchestratorUrl: PROD_URL,
+    orchestratorSecret: "secret-orch-prod",
+    executorUrl: PROD_EXEC_URL,
+    executorSecret: "secret-exec-prod",
+    discoveryUrl: PROD_DISC_URL,
+    discoverySecret: "secret-disc-prod",
+  });
+}
+
+describe("PROD SAFETY — DEV válido aceita (comportamento padrão inalterado)", () => {
+  it("sem --environment, URLs de dev -> guard passa, chega em inspectAccount", async () => {
+    const deps = baseDepsRealGuards();
+    const code = await runCli(ARGV_DEV_DRY, deps);
+    expect(code).toBe(0);
+    expect(deps.inspectAccount).toHaveBeenCalledTimes(1);
+  });
+
+  it("--environment dev explícito, sem --confirm-project-ref -> também aceita (dev nunca exige confirmação)", async () => {
+    const deps = baseDepsRealGuards();
+    const code = await runCli([...ARGV_DRY, "--environment", "dev"], deps);
+    expect(code).toBe(0);
+    expect(deps.inspectAccount).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PROD SAFETY — PROD sem flag específica recusa", () => {
+  it("URLs de PROD no env, mas SEM --environment (default dev) -> aborta no guard, nunca chama inspectAccount", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli(ARGV_DRY, deps);
+    expect(code).toBe(1);
+    expect(deps.inspectAccount).not.toHaveBeenCalled();
+    expect((deps.error as ReturnType<typeof vi.fn>).mock.calls.join(" ")).toMatch(/PRODUÇÃO/);
+  });
+});
+
+describe("PROD SAFETY — PROD sem confirmação do project ref recusa", () => {
+  it("--environment prod SEM --confirm-project-ref -> aborta ANTES de ler env, nunca chama readEnv", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli([...ARGV_DRY, "--environment", "prod"], deps);
+    expect(code).toBe(1);
+    expect(deps.readEnv).not.toHaveBeenCalled();
+    expect(deps.inspectAccount).not.toHaveBeenCalled();
+    expect((deps.error as ReturnType<typeof vi.fn>).mock.calls.join(" ")).toMatch(/confirm-project-ref/);
+  });
+});
+
+describe("PROD SAFETY — PROD com confirmação ERRADA recusa", () => {
+  it("--confirm-project-ref com valor errado -> aborta, nunca chama readEnv", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli(
+      [...ARGV_DRY, "--environment", "prod", "--confirm-project-ref", "algum-ref-errado"],
+      deps,
+    );
+    expect(code).toBe(1);
+    expect(deps.readEnv).not.toHaveBeenCalled();
+  });
+
+  it("--confirm-project-ref = ref de DEV (trocado) -> aborta", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli(
+      [...ARGV_DRY, "--environment", "prod", "--confirm-project-ref", DEV_PROJECT_REF],
+      deps,
+    );
+    expect(code).toBe(1);
+  });
+});
+
+describe("PROD SAFETY — environment dev + URL de Prod recusa", () => {
+  it("--environment dev (implícito) com env apontando para Prod -> aborta no guard de URL", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli(ARGV_DRY, deps);
+    expect(code).toBe(1);
+    expect(deps.inspectAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("PROD SAFETY — environment prod + URL de Dev recusa", () => {
+  it("--environment prod + --confirm-project-ref corretos, mas env aponta para DEV -> aborta no guard de URL", async () => {
+    const deps = baseDepsRealGuards(); // readEnv default = URLs de DEV
+    const code = await runCli([...ARGV_DRY, ...PROD_ENV_FLAGS], deps);
+    expect(code).toBe(1);
+    expect(deps.inspectAccount).not.toHaveBeenCalled();
+    expect((deps.error as ReturnType<typeof vi.fn>).mock.calls.join(" ")).toMatch(/DEV/);
+  });
+});
+
+describe("PROD SAFETY — URLs misturadas (dev + prod na mesma execução) recusam", () => {
+  it("orchestrator de PROD + executor de DEV, --environment prod confirmado -> aborta no 2º guard (executor)", async () => {
+    const deps = baseDepsRealGuards({
+      readEnv: vi.fn().mockReturnValue({
+        orchestratorUrl: PROD_URL, // prod
+        orchestratorSecret: "s1",
+        executorUrl: EXEC_URL, // dev — misturado
+        executorSecret: "s2",
+        discoveryUrl: null,
+        discoverySecret: null,
+      }),
+    });
+    const code = await runCli([...ARGV_DRY, ...PROD_ENV_FLAGS], deps);
+    expect(code).toBe(1);
+    expect(deps.inspectAccount).not.toHaveBeenCalled();
+  });
+
+  it("orchestrator+executor de DEV corretos, mas discovery de PROD (--all-history) -> aborta antes de discoverAccountHistory", async () => {
+    const deps = baseDepsRealGuards({
+      readEnv: vi.fn().mockReturnValue({
+        orchestratorUrl: DEV_URL,
+        orchestratorSecret: "s1",
+        executorUrl: EXEC_URL,
+        executorSecret: "s2",
+        discoveryUrl: PROD_DISC_URL, // misturado
+        discoverySecret: "s3",
+      }),
+      requireDiscoveryEnv: vi.fn().mockReturnValue({ discoveryUrl: PROD_DISC_URL, discoverySecret: "s3" }),
+    });
+    const code = await runCli(ARGV_ALL_HISTORY_DRY, deps); // environment default = dev
+    expect(code).toBe(1);
+    expect(deps.discoverAccountHistory).not.toHaveBeenCalled();
+  });
+});
+
+describe("PROD SAFETY — project ref desconhecido recusa", () => {
+  it("URL com project-ref que não é nem dev nem prod -> aborta, mesmo com --environment/--confirm-project-ref 'corretos' para dev", async () => {
+    const deps = baseDepsRealGuards({
+      readEnv: vi.fn().mockReturnValue({
+        orchestratorUrl: "https://algumoutroref00.supabase.co/functions/v1/meta-backfill-orchestrator",
+        orchestratorSecret: "s1",
+        executorUrl: EXEC_URL,
+        executorSecret: "s2",
+        discoveryUrl: null,
+        discoverySecret: null,
+      }),
+    });
+    const code = await runCli(ARGV_DRY, deps);
+    expect(code).toBe(1);
+    expect(deps.inspectAccount).not.toHaveBeenCalled();
+  });
+});
+
+describe("PROD SAFETY — PROD corretamente configurado passa APENAS pelo guard (dry-run)", () => {
+  it("--environment prod + --confirm-project-ref correto + URLs de prod -> guard passa, inspectAccount é chamado, mas createJob NUNCA (sem --execute)", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli([...ARGV_DRY, ...PROD_ENV_FLAGS], deps);
+    expect(code).toBe(0);
+    expect(deps.inspectAccount).toHaveBeenCalledTimes(1);
+    expect(deps.createJob).not.toHaveBeenCalled();
+    expect(deps.invokeExecutorOnce).not.toHaveBeenCalled();
+    const logged = (deps.log as ReturnType<typeof vi.fn>).mock.calls.map((c) => c.join(" ")).join("\n");
+    expect(logged).toMatch(/PRODUÇÃO/);
+    expect(logged).toMatch(/DRY-RUN/);
+  });
+
+  it("PROD + --all-history dry-run: discovery real (fake) é chamada, mas nenhum job criado", async () => {
+    const deps = baseDepsRealGuards({
+      readEnv: makeProdEnvRead(),
+      requireDiscoveryEnv: vi.fn().mockReturnValue({ discoveryUrl: PROD_DISC_URL, discoverySecret: "secret-disc-prod" }),
+    });
+    const code = await runCli(["--client-id", "c1", "--ad-account-ref", "a1", "--all-history", ...PROD_ENV_FLAGS], deps);
+    expect(code).toBe(0);
+    expect(deps.discoverAccountHistory).toHaveBeenCalledTimes(1);
+    expect(deps.createJob).not.toHaveBeenCalled();
+  });
+});
+
+describe("PROD SAFETY — ausência de --execute continua sem autorizar execução (dev e prod)", () => {
+  it("PROD, dry-run (sem --execute) -> nunca escreve insight/cria job/chama executor", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    await runCli([...ARGV_DRY, ...PROD_ENV_FLAGS], deps);
+    expect(deps.createJob).not.toHaveBeenCalled();
+    expect(deps.invokeExecutorOnce).not.toHaveBeenCalled();
+    expect(deps.getJobStatus).not.toHaveBeenCalled();
+  });
+
+  it("PROD, COM --execute -> aí sim createJob é chamado (a 2ª decisão explícita, independente da 1ª)", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli([...ARGV_EXEC, ...PROD_ENV_FLAGS], deps);
+    expect(code).toBe(0);
+    expect(deps.createJob).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PROD SAFETY — --resume também passa pelo guard de ambiente", () => {
+  it("--resume sem --environment, mas env aponta pra prod -> aborta antes de getJobStatus", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli(["--resume", "job-1"], deps);
+    expect(code).toBe(1);
+    expect(deps.getJobStatus).not.toHaveBeenCalled();
+  });
+
+  it("--resume --environment prod --confirm-project-ref correto + URLs de prod -> guard passa, retoma o loop", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    const code = await runCli(["--resume", "job-1", ...PROD_ENV_FLAGS], deps);
+    expect(code).toBe(0);
+    expect(deps.getJobStatus).toHaveBeenCalled();
+  });
+});
+
+describe("PROD SAFETY — mensagens de erro nunca expõem secret, só o guard fica explícito", () => {
+  it("erro de guard nunca contém valor de secret (secrets nem chegam a ser lidos antes do guard de intenção)", async () => {
+    const deps = baseDepsRealGuards({ readEnv: makeProdEnvRead() });
+    await runCli([...ARGV_DRY, "--environment", "prod"], deps); // sem confirm -> aborta cedo
+    const allLogged = [
+      ...(deps.log as ReturnType<typeof vi.fn>).mock.calls,
+      ...(deps.error as ReturnType<typeof vi.fn>).mock.calls,
+    ]
+      .flat()
+      .join(" ");
+    expect(allLogged).not.toContain("secret-orch-prod");
+    expect(allLogged).not.toContain("secret-exec-prod");
+  });
+});
+
+describe("PROD SAFETY — nenhum modo genérico: só dev/prod são aceitos em --environment", () => {
+  it("--environment com valor desconhecido -> CliArgsError, nunca chega no guard", async () => {
+    const deps = baseDeps(); // fakes — aqui queremos ASSERT sobre chamadas, não o guard real
+    const code = await runCli([...ARGV_DRY, "--environment", "staging"], deps);
+    expect(code).toBe(1);
+    expect(deps.assertEnvironmentConfirmed).not.toHaveBeenCalled();
+    expect(deps.readEnv).not.toHaveBeenCalled();
+  });
+});
+
+describe("EnvironmentGuardError é a classe usada nos 2 passos (integração real)", () => {
+  it("assertEnvironmentConfirmed/assertUrlMatchesEnvironment reais lançam EnvironmentGuardError, e runCli trata sem crashar", async () => {
+    expect(() => realAssertEnvironmentConfirmed("prod", null)).toThrow(EnvironmentGuardError);
+    expect(() => realAssertUrlMatchesEnvironment(PROD_URL, "dev")).toThrow(EnvironmentGuardError);
   });
 });

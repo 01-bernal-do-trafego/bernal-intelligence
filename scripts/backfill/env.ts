@@ -1,5 +1,6 @@
 /**
- * DATA V2.3A/V2.3B — Historical Backfill Rollout. Leitura de env do runner.
+ * DATA V2.3A/V2.3B + PROD SAFETY — Historical Backfill Rollout. Leitura de
+ * env do runner.
  *
  * SOMENTE env — nenhum secret é aceito via argumento de CLI (ver
  * `cli-args.ts`), nenhum secret é impresso (nenhum destes valores passa por
@@ -10,6 +11,30 @@
  * (checado em `run.ts`, não aqui) — o modo explícito `--from`/`--to` (V2.3A)
  * continua funcionando sem essas 2 variáveis configuradas.
  */
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
+import type { Environment } from "./environment-guard";
+
+/**
+ * Carrega `.env.backfill.<environment>.local` (raiz do repo) se o arquivo
+ * existir — NUNCA sobrescreve uma variável já presente em `process.env`
+ * (`process.loadEnvFile` nativo do Node já tem essa semântica: shell
+ * exportado sempre vence sobre o arquivo). Silencioso quando o arquivo não
+ * existe — o fluxo atual (variáveis exportadas manualmente no shell)
+ * continua funcionando sem nenhuma mudança.
+ *
+ * `.env.backfill.dev.local` / `.env.backfill.prod.local` já são ignorados
+ * pelo Git (`.gitignore`: `.env.*`) — nenhum secret é commitado por este
+ * carregamento. Cada arquivo deve conter as variáveis do PRÓPRIO ambiente
+ * (URLs + secrets) — `environment-guard.ts` valida depois que elas
+ * realmente correspondem ao ambiente declarado; este loader só decide QUAL
+ * arquivo tentar, nunca valida o conteúdo.
+ */
+export function loadEnvironmentFile(environment: Environment, cwd: string = process.cwd()): void {
+  const path = resolve(cwd, `.env.backfill.${environment}.local`);
+  if (!existsSync(path)) return;
+  process.loadEnvFile(path);
+}
 
 export interface RunnerEnv {
   orchestratorUrl: string;

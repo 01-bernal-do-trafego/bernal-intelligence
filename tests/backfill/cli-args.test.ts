@@ -41,7 +41,15 @@ describe("parseRunArgs — rangeMode explicit (--from/--to)", () => {
 describe("parseRunArgs — rangeMode all-history (--all-history)", () => {
   it("--all-history -> rangeMode all-history, sem from/to", () => {
     const parsed = parseRunArgs(BASE_ALL_HISTORY);
-    expect(parsed).toEqual({ mode: "dry-run", rangeMode: "all-history", clientId: "c1", adAccountRef: "a1", levels: ["account", "campaign", "adset", "ad"] });
+    expect(parsed).toEqual({
+      mode: "dry-run",
+      rangeMode: "all-history",
+      environment: "dev",
+      confirmProjectRef: null,
+      clientId: "c1",
+      adAccountRef: "a1",
+      levels: ["account", "campaign", "adset", "ad"],
+    });
   });
   it("--all-history --execute -> mode execute, rangeMode all-history", () => {
     const parsed = parseRunArgs([...BASE_ALL_HISTORY, "--execute"]);
@@ -104,7 +112,7 @@ describe("parseRunArgs — --levels", () => {
 describe("parseRunArgs — --resume não exige nada além do jobId", () => {
   it("--resume <jobId> -> mode resume, ignora client-id/from/to/all-history mesmo se ausentes", () => {
     const parsed = parseRunArgs(["--resume", "job-123"]);
-    expect(parsed).toEqual({ mode: "resume", jobId: "job-123" });
+    expect(parsed).toEqual({ mode: "resume", environment: "dev", confirmProjectRef: null, jobId: "job-123" });
   });
   it("--resume tem prioridade mesmo se outras flags também vierem", () => {
     const parsed = parseRunArgs(["--resume", "job-123", "--client-id", "c1"]);
@@ -112,7 +120,7 @@ describe("parseRunArgs — --resume não exige nada além do jobId", () => {
   });
   it("--resume nunca dispara discovery — não roda nenhuma checagem de rangeMode", () => {
     const parsed = parseRunArgs(["--resume", "job-123", "--all-history"]);
-    expect(parsed).toEqual({ mode: "resume", jobId: "job-123" });
+    expect(parsed).toEqual({ mode: "resume", environment: "dev", confirmProjectRef: null, jobId: "job-123" });
   });
 });
 
@@ -121,5 +129,63 @@ describe("nenhum secret é um flag reconhecido (nunca aceito via CLI)", () => {
     const parsed = parseRunArgs([...BASE, "--secret", "abc123"]);
     expect(parsed.mode).toBe("dry-run");
     expect(JSON.stringify(parsed)).not.toContain("abc123");
+  });
+});
+
+/* ================= PROD SAFETY — --environment / --confirm-project-ref ================= */
+
+describe("parseRunArgs — --environment (default dev, só dev/prod aceitos)", () => {
+  it("sem --environment -> environment: 'dev' (comportamento padrão inalterado)", () => {
+    const parsed = parseRunArgs(BASE);
+    if (parsed.mode === "resume") throw new Error("não deveria ser resume");
+    expect(parsed.environment).toBe("dev");
+    expect(parsed.confirmProjectRef).toBeNull();
+  });
+
+  it("--environment dev explícito -> environment: 'dev'", () => {
+    const parsed = parseRunArgs([...BASE, "--environment", "dev"]);
+    if (parsed.mode === "resume") throw new Error("não deveria ser resume");
+    expect(parsed.environment).toBe("dev");
+  });
+
+  it("--environment prod -> environment: 'prod'", () => {
+    const parsed = parseRunArgs([...BASE, "--environment", "prod"]);
+    if (parsed.mode === "resume") throw new Error("não deveria ser resume");
+    expect(parsed.environment).toBe("prod");
+  });
+
+  it("--environment com valor desconhecido -> CliArgsError, nunca 'aceita por padrão'", () => {
+    expect(() => parseRunArgs([...BASE, "--environment", "staging"])).toThrow(CliArgsError);
+    expect(() => parseRunArgs([...BASE, "--environment", "production"])).toThrow(CliArgsError);
+    expect(() => parseRunArgs([...BASE, "--environment", "PROD"])).toThrow(CliArgsError); // case-sensitive, sem normalização silenciosa
+  });
+
+  it("--confirm-project-ref é repassado cru, sem validar o valor aqui (validação é do environment-guard)", () => {
+    const parsed = parseRunArgs([...BASE, "--environment", "prod", "--confirm-project-ref", "qualquer-coisa"]);
+    if (parsed.mode === "resume") throw new Error("não deveria ser resume");
+    expect(parsed.confirmProjectRef).toBe("qualquer-coisa");
+  });
+
+  it("--confirm-project-ref sem --environment (dev implícito) -> ainda é lido/repassado, mesmo sem uso (dev ignora)", () => {
+    const parsed = parseRunArgs([...BASE, "--confirm-project-ref", "bmtzurlsohinqbjxcpje"]);
+    if (parsed.mode === "resume") throw new Error("não deveria ser resume");
+    expect(parsed.environment).toBe("dev");
+    expect(parsed.confirmProjectRef).toBe("bmtzurlsohinqbjxcpje");
+  });
+
+  it("--environment funciona também com --all-history", () => {
+    const parsed = parseRunArgs([...BASE_ALL_HISTORY, "--environment", "prod", "--confirm-project-ref", "x"]);
+    if (parsed.mode === "resume") throw new Error("não deveria ser resume");
+    expect(parsed.environment).toBe("prod");
+  });
+
+  it("--resume também aceita --environment/--confirm-project-ref (resume em Prod passa pelo mesmo contrato)", () => {
+    const parsed = parseRunArgs(["--resume", "job-1", "--environment", "prod", "--confirm-project-ref", "bmtzurlsohinqbjxcpje"]);
+    expect(parsed).toEqual({
+      mode: "resume",
+      environment: "prod",
+      confirmProjectRef: "bmtzurlsohinqbjxcpje",
+      jobId: "job-1",
+    });
   });
 });

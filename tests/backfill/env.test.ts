@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
-import { readRunnerEnv, requireDiscoveryEnv, RunnerEnvError } from "../../scripts/backfill/env";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { loadEnvironmentFile, readRunnerEnv, requireDiscoveryEnv, RunnerEnvError } from "../../scripts/backfill/env";
 
 const FULL_ENV = {
   BACKFILL_ORCHESTRATOR_URL: "https://x.supabase.co/functions/v1/meta-backfill-orchestrator",
@@ -86,5 +89,59 @@ describe("requireDiscoveryEnv — só exigido quando --all-history é usado", ()
       expect((e as Error).message).toContain("META_BACKFILL_DISCOVERY_SECRET");
       expect((e as Error).message).not.toContain("BACKFILL_DISCOVERY_URL,");
     }
+  });
+});
+
+/* ================= PROD SAFETY — .env.backfill.<environment>.local ================= */
+
+describe("loadEnvironmentFile — .env.backfill.<environment>.local (PASSO 4)", () => {
+  let dir: string;
+  const ORIGINAL = { ...process.env };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "backfill-env-test-"));
+  });
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    // restaura process.env exatamente como estava — nenhum teste vaza var para outro.
+    for (const key of Object.keys(process.env)) {
+      if (!(key in ORIGINAL)) delete process.env[key];
+    }
+    Object.assign(process.env, ORIGINAL);
+  });
+
+  it("arquivo ausente -> não lança, não muda process.env (fluxo atual de export manual continua igual)", () => {
+    delete process.env.BACKFILL_TEST_VAR;
+    expect(() => loadEnvironmentFile("dev", dir)).not.toThrow();
+    expect(process.env.BACKFILL_TEST_VAR).toBeUndefined();
+  });
+
+  it("arquivo .env.backfill.dev.local presente -> carrega as variáveis dele", () => {
+    delete process.env.BACKFILL_TEST_VAR;
+    writeFileSync(join(dir, ".env.backfill.dev.local"), "BACKFILL_TEST_VAR=from-dev-file\n");
+    loadEnvironmentFile("dev", dir);
+    expect(process.env.BACKFILL_TEST_VAR).toBe("from-dev-file");
+  });
+
+  it("arquivo .env.backfill.prod.local presente -> carrega as variáveis dele (arquivo separado do dev)", () => {
+    delete process.env.BACKFILL_TEST_VAR;
+    writeFileSync(join(dir, ".env.backfill.prod.local"), "BACKFILL_TEST_VAR=from-prod-file\n");
+    loadEnvironmentFile("prod", dir);
+    expect(process.env.BACKFILL_TEST_VAR).toBe("from-prod-file");
+  });
+
+  it("environment='dev' NUNCA lê o arquivo de prod, e vice-versa", () => {
+    writeFileSync(join(dir, ".env.backfill.dev.local"), "BACKFILL_TEST_VAR=dev-value\n");
+    writeFileSync(join(dir, ".env.backfill.prod.local"), "BACKFILL_TEST_VAR=prod-value\n");
+    delete process.env.BACKFILL_TEST_VAR;
+    loadEnvironmentFile("dev", dir);
+    expect(process.env.BACKFILL_TEST_VAR).toBe("dev-value");
+  });
+
+  it("variável já setada no processo (shell exportado) NUNCA é sobrescrita pelo arquivo", () => {
+    process.env.BACKFILL_TEST_VAR = "from-shell";
+    writeFileSync(join(dir, ".env.backfill.dev.local"), "BACKFILL_TEST_VAR=from-file\n");
+    loadEnvironmentFile("dev", dir);
+    expect(process.env.BACKFILL_TEST_VAR).toBe("from-shell");
   });
 });

@@ -32,7 +32,7 @@ describe("Ctrl-C não cancela job — nenhum handler de SIGINT toca o job", () =
 });
 
 describe("secrets nunca aceitos via argumento de CLI", () => {
-  it("cli-args.ts só reconhece os flags documentados (client-id, ad-account-ref, from, to, levels, execute, resume, all-history) — nenhum flag de secret", () => {
+  it("cli-args.ts só reconhece os flags documentados (client-id, ad-account-ref, from, to, levels, execute, resume, all-history, environment, confirm-project-ref) — nenhum flag de secret", () => {
     const flags = [...cliArgsSrc.matchAll(/getFlagValue\(argv, "(--[\w-]+)"\)|hasFlag\(argv, "(--[\w-]+)"\)/g)]
       .map((m) => m[1] ?? m[2]);
     const allowed = new Set([
@@ -44,6 +44,8 @@ describe("secrets nunca aceitos via argumento de CLI", () => {
       "--levels",
       "--execute",
       "--all-history",
+      "--environment",
+      "--confirm-project-ref",
     ]);
     for (const flag of flags) {
       expect(allowed.has(flag), `flag inesperado em cli-args.ts: ${flag}`).toBe(true);
@@ -80,8 +82,8 @@ describe("--all-history e --from/--to são mutuamente exclusivos (guarda estáti
     const resumeIdx = cliArgsSrc.indexOf("if (resumeJobId)");
     const allHistoryCheckIdx = cliArgsSrc.indexOf("if (allHistory && (from || to))");
     expect(resumeIdx).toBeLessThan(allHistoryCheckIdx);
-    const resumeBlock = cliArgsSrc.slice(resumeIdx, resumeIdx + 150);
-    expect(resumeBlock).toMatch(/return \{ mode: "resume", jobId: resumeJobId \}/);
+    const resumeBlock = cliArgsSrc.slice(resumeIdx, resumeIdx + 220);
+    expect(resumeBlock).toMatch(/return \{ mode: "resume", environment, confirmProjectRef, jobId: resumeJobId \}/);
   });
 });
 
@@ -110,5 +112,62 @@ describe("MAX_PLANNED_SEGMENTS — importado do módulo dedicado, não um númer
 describe("rollout sequencial — sem paralelismo entre contas/segmentos", () => {
   it("runCli não tem nenhum Promise.all/paralelismo chamando invokeExecutorOnce mais de uma vez por vez", () => {
     expect(runSrc).not.toMatch(/Promise\.all\([^)]*invokeExecutorOnce/);
+  });
+});
+
+describe("PROD SAFETY — guard de ambiente roda ANTES de qualquer coisa (guarda estática)", () => {
+  it("run.ts importa de ./environment-guard, não de ./dev-guard (arquivo antigo removido)", () => {
+    expect(runSrc).toMatch(/from ["']\.\/environment-guard["']/);
+    expect(runSrc).not.toMatch(/from ["']\.\/dev-guard["']/);
+    expect(runSrc).not.toContain("assertDevProjectRef");
+    expect(runSrc).not.toContain("DevOnlyGuardError");
+  });
+
+  it("assertEnvironmentConfirmed roda IMEDIATAMENTE após parseRunArgs, ANTES de deps.readEnv()", () => {
+    const parseIdx = runSrc.indexOf("args = parseRunArgs(argv)");
+    const confirmIdx = runSrc.indexOf("deps.assertEnvironmentConfirmed(");
+    const readEnvIdx = runSrc.indexOf("env = deps.readEnv()");
+    expect(parseIdx).toBeGreaterThan(-1);
+    expect(confirmIdx).toBeGreaterThan(parseIdx);
+    expect(confirmIdx).toBeLessThan(readEnvIdx);
+  });
+
+  it("assertUrlMatchesEnvironment roda para orchestrator E executor, ANTES de qualquer inspectAccount/createJob/invokeExecutorOnce", () => {
+    const urlGuardIdx = runSrc.indexOf("deps.assertUrlMatchesEnvironment(env.orchestratorUrl");
+    const inspectIdx = runSrc.indexOf("deps.inspectAccount(");
+    const createJobIdx = runSrc.indexOf("deps.createJob(");
+    const invokeIdx = runSrc.indexOf("deps.invokeExecutorOnce(");
+    expect(urlGuardIdx).toBeGreaterThan(-1);
+    expect(urlGuardIdx).toBeLessThan(inspectIdx);
+    expect(urlGuardIdx).toBeLessThan(createJobIdx);
+    expect(urlGuardIdx).toBeLessThan(invokeIdx);
+  });
+
+  it("guard de discovery roda ANTES de discoverAccountHistory", () => {
+    const discGuardIdx = runSrc.indexOf("deps.assertUrlMatchesEnvironment(discoveryEnv.discoveryUrl");
+    const discCallIdx = runSrc.indexOf("deps.discoverAccountHistory(");
+    expect(discGuardIdx).toBeGreaterThan(-1);
+    expect(discGuardIdx).toBeLessThan(discCallIdx);
+  });
+
+  it("environment-guard.ts só conhece 2 project-refs (dev/prod) — nenhum modo genérico 'aceita qualquer ref'", () => {
+    const guardSrc = read("../../scripts/backfill/environment-guard.ts");
+    expect(guardSrc).toContain('export const DEV_PROJECT_REF = "vqodysgxdkkvmfqyprpu"');
+    expect(guardSrc).toContain('export const PROD_PROJECT_REF = "bmtzurlsohinqbjxcpje"');
+    // toda saída de assertUrlMatchesEnvironment é `return` (ref bate) ou
+    // `throw` (não bate) — nunca um terceiro caminho "aceita mesmo assim".
+    const fnIdx = guardSrc.indexOf("export function assertUrlMatchesEnvironment");
+    const fnBody = guardSrc.slice(fnIdx, guardSrc.lastIndexOf("}") + 1);
+    const returns = [...fnBody.matchAll(/\breturn\b/g)].length;
+    const throws = [...fnBody.matchAll(/\bthrow\b/g)].length;
+    expect(returns).toBe(1); // só o caminho "bate" retorna
+    expect(throws).toBe(3); // os 3 caminhos de mismatch (prod/dev/desconhecido)
+  });
+
+  it("--confirm-project-ref exigido só para prod — dev nunca precisa de confirmação extra (guarda estática)", () => {
+    const guardSrc = read("../../scripts/backfill/environment-guard.ts");
+    const fnIdx = guardSrc.indexOf("export function assertEnvironmentConfirmed");
+    const fnBody = guardSrc.slice(fnIdx, guardSrc.indexOf("\n}", fnIdx));
+    expect(fnBody).toMatch(/if \(environment === "dev"\) return;/);
   });
 });
